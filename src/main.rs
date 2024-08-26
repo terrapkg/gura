@@ -31,6 +31,11 @@ fn index() -> response::Redirect {
     response::Redirect::to("https://terra.fyralabs.com/")
 }
 
+#[get("/_health")]
+async fn health() -> String {
+    format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+}
+
 #[launch]
 fn rocket() -> _ {
     if let Err(e) = dotenv::dotenv() {
@@ -39,6 +44,6 @@ fn rocket() -> _ {
     assert!(std::env::var("JWT_KEY").is_ok(), "JWT_KEY cannot be empty");
     rocket::build()
         .attach(RpmSqlite::init())
-        .mount("/", routes![index])
+        .mount("/", routes![index, health])
         .mount("/api", api::routes())
 }
