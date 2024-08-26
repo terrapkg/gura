@@ -14,6 +14,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 
 pub mod db;
+pub mod download;
 mod error;
 mod pool;
 pub mod rpm;
