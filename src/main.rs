@@ -18,6 +18,11 @@ use rocket::response;
 #[macro_use]
 extern crate rocket;
 
+mod database;
+mod db;
+
+use database::Database;
+
 #[get("/")]
 fn index() -> response::Redirect {
     response::Redirect::to("https://terra.fyralabs.com/")
@@ -25,5 +30,7 @@ fn index() -> response::Redirect {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build().mount("/", routes![index])
+    rocket::build()
+        .mount("/", routes![index])
+        .attach(db::RpmSqlite::init())
 }
