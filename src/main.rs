@@ -19,6 +19,7 @@ use rocket::response;
 extern crate rocket;
 
 mod api;
+mod authentication;
 mod database;
 mod models;
 
@@ -32,8 +33,12 @@ fn index() -> response::Redirect {
 
 #[launch]
 fn rocket() -> _ {
+    if let Err(e) = dotenv::dotenv() {
+        println!("Ignoring .env: {e}")
+    }
+    assert!(std::env::var("JWT_KEY").is_ok(), "JWT_KEY cannot be empty");
     rocket::build()
+        .attach(RpmSqlite::init())
         .mount("/", routes![index])
         .mount("/api", api::routes())
-        .attach(RpmSqlite::init())
 }
