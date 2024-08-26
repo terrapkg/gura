@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reqwest = { version = "0.12.7", features = ["stream"] }
+base64 = "0.22.1"
+jwt-simple = "0.12.9"
+lazy_static = "1.5.0"
+reqwest = { version = "0.12.7", features = ["stream", "native-tls-vendored"] }
 rocket = { version = "0.5", features = ["json"] }
 serde = "1.0.209"
 serde-xml-rs = "0.6.0"
