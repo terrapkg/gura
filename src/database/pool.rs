@@ -40,9 +40,10 @@ impl<D: sqlx::Database> DbPool for sqlx::Pool<D> {
     type Connection = sqlx::pool::PoolConnection<D>;
 
     async fn init() -> Result<Self, Self::Error> {
-        let database_name = get_latest_database(None).await.map_err(|_| {
+        // FIXME: Check if the database exists, and if it doesn't, download it. Possibly have reqwests cache the request?
+        let database_name = download().await.map_err(|_| {
             Error::Init(sqlx::Error::Protocol(
-                "Unable to get latest database name".to_owned(),
+                "Unable to get latest database".to_owned(),
             ))
         })?;
 
