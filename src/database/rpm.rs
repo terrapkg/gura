@@ -63,7 +63,7 @@ impl Database for RpmSqlite {
     type Pool = sqlx::SqlitePool;
     const NAME: &'static str = "RpmSqlite";
 
-    fn init() -> super::database::db::Initializer<Self> {
-        super::database::db::Initializer::with_name("RpmSqlite")
+    fn init() -> super::db::Initializer<Self> {
+        super::db::Initializer::with_name("RpmSqlite")
     }
 }
