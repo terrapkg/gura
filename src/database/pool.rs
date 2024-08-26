@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License along with gura.
 // If not, see <https://www.gnu.org/licenses/>.
 
-use super::error::Error;
+use super::{download::download, error::Error};
 use std::time::Duration;
+
+use super::download::get_latest_database;
 
 type Options<D> = <<D as sqlx::Database>::Connection as sqlx::Connection>::Options;
 
@@ -38,16 +40,29 @@ impl<D: sqlx::Database> DbPool for sqlx::Pool<D> {
     type Connection = sqlx::pool::PoolConnection<D>;
 
     async fn init() -> Result<Self, Self::Error> {
+        let database_name = get_latest_database(None).await.map_err(|_| {
+            Error::Init(sqlx::Error::Protocol(
+                "Unable to get latest database name".to_owned(),
+            ))
+        })?;
+
         sqlx::pool::PoolOptions::new()
             .max_connections(4) // FIXME: determine a proper value for this
             .acquire_timeout(Duration::from_secs(5))
-            .connect("primary.sqlite")
+            .connect(&database_name)
             .await
             .map_err(Error::Init)
     }
 
+    // FIXME: compare the database names and only update if one is newer
     async fn reload(&self) -> Result<(), Self::Error> {
-        let opts = "".parse::<Options<D>>().map_err(Error::Init)?;
+        let database_name = download().await.map_err(|_| {
+            Error::Init(sqlx::Error::Protocol(
+                "Unable to get latest database".to_owned(),
+            ))
+        })?;
+
+        let opts = database_name.parse::<Options<D>>().map_err(Error::Init)?;
 
         self.set_connect_options(opts);
 

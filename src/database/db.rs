@@ -68,6 +68,7 @@ impl<'r, D: Database> FromRequest<'r> for Connection<D> {
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         match D::fetch(req.rocket()) {
+            // FIXME: download database if needed
             Some(db) => match db.get().await {
                 Ok(conn) => Outcome::Success(Connection(conn)),
                 Err(e) => Outcome::Error((Status::ServiceUnavailable, Some(e))),
