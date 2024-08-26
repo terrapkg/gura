@@ -19,31 +19,58 @@ use std::io::BufWriter;
 
 use crate::models::Repodata;
 
-async fn get_file_url(repodata: String) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let xml_stream = reqwest::get(repodata).await?.text().await?;
+async fn get_xml() -> Result<Repodata, Box<dyn std::error::Error>> {
+    const DOWNLOAD_URL: &str = "https://repos.fyralabs.com/terra41/repodata/repomd.xml";
+
+    let xml_stream = reqwest::get(DOWNLOAD_URL).await?.text().await?;
 
     let xml: Repodata = serde_xml_rs::from_str(&xml_stream).unwrap();
 
+    Ok(xml)
+}
+
+async fn get_file_url(xml: Repodata) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(loc) = xml.data.iter().find(|data| data._type == "primary_db") {
         let href = loc.location.href.clone().replace("repodata/", "");
-        return Ok((href, xml.revision));
+        return Ok(href);
     }
 
     Err("File Not Found".into())
 }
 
-/// Returns the path to the downloaded database.
-pub async fn download() -> Result<String, Box<dyn std::error::Error>> {
-    const DOWNLOAD_URL: &str = "https://repos.fyralabs.com/terra41/repodata/";
-
-    let (file_url, revision) = get_file_url(DOWNLOAD_URL.to_owned() + "/repomd.xml").await?;
-
-    let mut stream = reqwest::get(DOWNLOAD_URL.to_owned() + &file_url)
-        .await?
-        .bytes_stream();
+pub async fn get_latest_database(
+    _xml: Option<Repodata>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let xml: Repodata;
+    if let Some(_xml) = _xml {
+        xml = _xml;
+    } else {
+        xml = get_xml().await?;
+    }
 
     let mut filename = std::env::temp_dir();
-    filename.push(format!("primary-{}.sqlite", revision));
+    filename.push(format!("primary-{}.sqlite", xml.revision));
+
+    filename
+        .into_os_string()
+        .into_string()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "oh nyo").into())
+}
+
+/// Returns the path to the downloaded database.
+pub async fn download() -> Result<String, Box<dyn std::error::Error>> {
+    let xml = get_xml().await?;
+
+    let file_url = get_file_url(xml.clone()).await?;
+
+    let mut stream = reqwest::get(format!(
+        "https://repos.fyralabs.com/terra41/repodata/{}",
+        &file_url
+    ))
+    .await?
+    .bytes_stream();
+
+    let filename = get_latest_database(Some(xml)).await?;
 
     let out = BufWriter::new(File::create(filename.clone())?);
 
@@ -53,8 +80,5 @@ pub async fn download() -> Result<String, Box<dyn std::error::Error>> {
         std::io::copy(&mut chunk?.as_ref(), &mut xz_decode)?;
     }
 
-    filename
-        .into_os_string()
-        .into_string()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "oh nyo").into())
+    Ok(filename)
 }
