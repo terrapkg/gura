@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Repodata {
+    pub revision: String,
     pub data: Vec<Data>,
 }
 
