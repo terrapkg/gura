@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License along with gura.
 // If not, see <https://www.gnu.org/licenses/>.
 
-use rocket::Route;
+use crate::authentication::ApiAuth;
+use crate::database::db::Reloader;
+use crate::database::RpmSqlite;
 
-mod package;
-mod repo_update;
+use rocket::http::Status;
 
-pub fn routes() -> Vec<Route> {
-    routes![package::get_package, repo_update::repo_update]
+#[post("/ci/repo_update")]
+pub async fn repo_update(_db: Reloader<RpmSqlite>, _auth: ApiAuth) -> Status {
+    Status::Ok
 }
