@@ -15,20 +15,20 @@
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Repodata {
     pub revision: String,
     pub data: Vec<Data>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Data {
     #[serde(rename = "type")]
     pub _type: String,
     pub location: Location,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Location {
     pub href: String,
 }
