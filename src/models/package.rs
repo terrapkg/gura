@@ -17,6 +17,16 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 #[derive(FromRow, Serialize, Debug)]
+pub struct SearchResult {
+    #[sqlx(rename = "pkgId")]
+    pub id: String,
+    #[sqlx(rename = "pkgKey")]
+    pub key: i32,
+    pub name: String,
+    pub arch: String,
+}
+
+#[derive(FromRow, Serialize, Debug)]
 pub struct Package {
     #[sqlx(rename = "pkgId")]
     pub id: String,

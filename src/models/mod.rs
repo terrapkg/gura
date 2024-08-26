@@ -17,4 +17,5 @@ mod package;
 mod repodata;
 
 pub use package::Package;
+pub use package::SearchResult;
 pub use repodata::Repodata;
