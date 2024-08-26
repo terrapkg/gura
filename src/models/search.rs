@@ -32,6 +32,6 @@ pub struct SearchResult {
     pub name: String,
     pub arch: String,
 
-    #[sqlx(rename = "providesName")]
+    #[sqlx(default, rename = "providesName")]
     pub provides: Option<String>,
 }
