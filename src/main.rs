@@ -18,10 +18,12 @@ use rocket::response;
 #[macro_use]
 extern crate rocket;
 
+mod api;
 mod database;
-mod db;
+mod models;
 
 use database::Database;
+use database::RpmSqlite;
 
 #[get("/")]
 fn index() -> response::Redirect {
@@ -32,5 +34,6 @@ fn index() -> response::Redirect {
 fn rocket() -> _ {
     rocket::build()
         .mount("/", routes![index])
-        .attach(db::RpmSqlite::init())
+        .mount("/api", api::routes())
+        .attach(RpmSqlite::init())
 }
