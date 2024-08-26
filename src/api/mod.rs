@@ -17,7 +17,12 @@ use rocket::Route;
 
 mod package;
 mod repo_update;
+mod search;
 
 pub fn routes() -> Vec<Route> {
-    routes![package::get_package, repo_update::repo_update]
+    routes![
+        package::get_package,
+        repo_update::repo_update,
+        search::search
+    ]
 }

@@ -16,19 +16,32 @@
 use crate::database::Connection;
 use crate::database::RpmSqlite;
 
-use crate::models::Package;
+use crate::models::SearchResult;
 
 use rocket::http::Status;
 
-#[get("/packages/<id>")]
-pub async fn get_package(
+async fn search_by_name(
     mut db: Connection<RpmSqlite>,
-    id: &str,
+    pkg_name: &str,
 ) -> Result<serde_json::Value, Status> {
-    sqlx::query_as::<_, Package>("SELECT * FROM packages WHERE pkgId = $1")
-        .bind(id)
-        .fetch_all(&mut **db)
-        .await
-        .map(|ret| serde_json::json!(ret))
-        .map_err(|_| Status::InternalServerError)
+    sqlx::query_as::<_, SearchResult>(
+        "SELECT pkgId, pkgKey, name, arch
+        FROM packages
+        WHERE name
+        LIKE '%' || $1 || '%'
+        --case-insensitive",
+    )
+    .bind(pkg_name)
+    .fetch_all(&mut **db)
+    .await
+    .map(|ret| serde_json::json!(ret))
+    .map_err(|e| {
+        println!("{e}");
+        Status::InternalServerError
+    })
+}
+
+#[get("/search?<q>")]
+pub async fn search(db: Connection<RpmSqlite>, q: &str) -> Result<serde_json::Value, Status> {
+    search_by_name(db, q).await
 }
