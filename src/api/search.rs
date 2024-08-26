@@ -16,6 +16,7 @@
 use crate::database::Connection;
 use crate::database::RpmSqlite;
 
+use crate::models::SearchFilter;
 use crate::models::SearchResult;
 
 use rocket::http::Status;
@@ -41,7 +42,69 @@ async fn search_by_name(
     })
 }
 
-#[get("/search?<q>")]
-pub async fn search(db: Connection<RpmSqlite>, q: &str) -> Result<serde_json::Value, Status> {
-    search_by_name(db, q).await
+fn get_filter_string(filter: &str, filter_added: &mut bool) -> String {
+    let mut filter_string: String;
+
+    if *filter_added {
+        filter_string = String::from(format!(" OR {filter} "));
+    } else {
+        filter_string = String::from(format!(" WHERE {filter} "));
+        *filter_added = true;
+    }
+
+    filter_string.push_str("LIKE '%' || $1 || '%'");
+
+    filter_string
+}
+
+async fn search_by_filters(
+    mut db: Connection<RpmSqlite>,
+    pkg_name: &str,
+    filters: Vec<SearchFilter>,
+) -> Result<serde_json::Value, Status> {
+    let mut query: String;
+    let is_provides: bool = filters.contains(&SearchFilter::Provides);
+
+    if is_provides {
+        query = "SELECT pkgId, packages.pkgKey, packages.name, provides.name AS providesName, arch FROM packages JOIN provides ON (provides.pkgKey = packages.pkgKey)".to_owned();
+    } else {
+        query = "SELECT pkgId, pkgKey, name, arch FROM packages".to_owned();
+    }
+    let mut filter_added = false;
+
+    for filter in filters {
+        match filter {
+            SearchFilter::Name => {
+                query.push_str(&get_filter_string("packages.name", &mut filter_added))
+            }
+            SearchFilter::Provides => {
+                query.push_str(&get_filter_string("provides.name", &mut filter_added))
+            }
+        }
+    }
+
+    query.push_str(" --case-insensitive");
+
+    sqlx::query_as::<_, SearchResult>(&query)
+        .bind(pkg_name)
+        .fetch_all(&mut **db)
+        .await
+        .map(|ret| serde_json::json!(ret))
+        .map_err(|e| {
+            println!("{e} ({})", &query);
+            Status::InternalServerError
+        })
+}
+
+#[get("/search?<q>&<filter>")]
+pub async fn search(
+    db: Connection<RpmSqlite>,
+    q: &str,
+    filter: Option<Vec<SearchFilter>>,
+) -> Result<serde_json::Value, Status> {
+    if let Some(filters) = filter {
+        search_by_filters(db, q, filters).await
+    } else {
+        search_by_name(db, q).await
+    }
 }
