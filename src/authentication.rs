@@ -22,7 +22,6 @@ use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine;
 use jwt_simple::prelude::*;
 
-// TOKEN
 lazy_static::lazy_static! {
   pub static ref JWT_KEY: HS256Key = HS256Key::from_bytes(&STANDARD_NO_PAD.decode(std::env::var("JWT_KEY").unwrap()).unwrap());
 }
@@ -72,6 +71,8 @@ impl<'r> FromRequest<'r> for ApiAuth {
                     false => request::Outcome::Error((Status::Forbidden, ApiError::NoAdminScope)),
                 };
             };
+
+            return request::Outcome::Error((Status::Forbidden, ApiError::NoAdminScope));
         }
         request::Outcome::Error((Status::Forbidden, ApiError::Nil))
     }
