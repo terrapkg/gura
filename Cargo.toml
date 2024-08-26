@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 rocket = "0.5"
+sqlx = { version = "0.8.1", features = ["sqlite"] }
+sqlx-sqlite = "0.8.1"
