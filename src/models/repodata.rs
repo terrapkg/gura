@@ -13,8 +13,21 @@
 // You should have received a copy of the GNU General Public License along with gura.
 // If not, see <https://www.gnu.org/licenses/>.
 
-mod package;
-mod repodata;
+use serde::Deserialize;
 
-pub use package::Package;
-pub use repodata::Repodata;
+#[derive(Debug, Deserialize)]
+pub struct Repodata {
+    pub data: Vec<Data>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Data {
+    #[serde(rename = "type")]
+    pub _type: String,
+    pub location: Location,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Location {
+    pub href: String,
+}
