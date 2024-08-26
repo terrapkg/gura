@@ -32,6 +32,7 @@ pub struct SearchResult {
     pub name: String,
     pub arch: String,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[sqlx(default, rename = "providesName")]
     pub provides: Option<String>,
 }
