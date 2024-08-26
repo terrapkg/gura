@@ -51,6 +51,9 @@ pub trait Database:
 
 pub struct Initializer<D: Database>(Option<&'static str>, PhantomData<fn() -> D>);
 pub struct Connection<D: Database>(<D::Pool as DbPool>::Connection);
+pub struct Reloader<D: Database>(PhantomData<fn() -> D>)
+where
+    D::Pool: DbPool;
 
 impl<D: Database> Initializer<D> {
     pub fn new() -> Self {
@@ -121,5 +124,29 @@ impl<D: Database> Deref for Connection<D> {
 impl<D: Database> DerefMut for Connection<D> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+#[rocket::async_trait]
+impl<'r, D: Database> FromRequest<'r> for Reloader<D> {
+    type Error = Option<<D::Pool as DbPool>::Error>;
+
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match D::fetch(req.rocket()) {
+            Some(db) => match db.reload().await {
+                Ok(_) => Outcome::Success(Reloader(std::marker::PhantomData)),
+                Err(e) => {
+                    println!("{e}");
+                    Outcome::Error((Status::InternalServerError, None))
+                }
+            },
+            None => Outcome::Error((Status::InternalServerError, None)),
+        }
+    }
+}
+
+impl<'a, D: Database> Sentinel for Reloader<D> {
+    fn abort(rocket: &Rocket<Ignite>) -> bool {
+        D::fetch(rocket).is_none()
     }
 }

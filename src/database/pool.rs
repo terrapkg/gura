@@ -16,8 +16,6 @@
 use super::{download::download, error::Error};
 use std::time::Duration;
 
-use super::download::get_latest_database;
-
 type Options<D> = <<D as sqlx::Database>::Connection as sqlx::Connection>::Options;
 
 #[rocket::async_trait]
@@ -40,7 +38,7 @@ impl<D: sqlx::Database> DbPool for sqlx::Pool<D> {
     type Connection = sqlx::pool::PoolConnection<D>;
 
     async fn init() -> Result<Self, Self::Error> {
-        // FIXME: Check if the database exists, and if it doesn't, download it. Possibly have reqwests cache the request?
+        // Always download the latest database when launching
         let database_name = download().await.map_err(|_| {
             Error::Init(sqlx::Error::Protocol(
                 "Unable to get latest database".to_owned(),
@@ -55,7 +53,6 @@ impl<D: sqlx::Database> DbPool for sqlx::Pool<D> {
             .map_err(Error::Init)
     }
 
-    // FIXME: compare the database names and only update if one is newer
     async fn reload(&self) -> Result<(), Self::Error> {
         let database_name = download().await.map_err(|_| {
             Error::Init(sqlx::Error::Protocol(
