@@ -24,7 +24,7 @@ use rocket::http::Status;
 async fn search_by_name(
     mut db: Connection<RpmSqlite>,
     pkg_name: &str,
-) -> Result<serde_json::Value, Status> {
+) -> Result<Vec<SearchResult>, Status> {
     sqlx::query_as::<_, SearchResult>(
         "SELECT pkgId, pkgKey, name, arch
         FROM packages
@@ -35,7 +35,6 @@ async fn search_by_name(
     .bind(pkg_name)
     .fetch_all(&mut **db)
     .await
-    .map(|ret| serde_json::json!(ret))
     .map_err(|e| {
         println!("{e}");
         Status::InternalServerError
@@ -61,7 +60,7 @@ async fn search_by_filters(
     mut db: Connection<RpmSqlite>,
     pkg_name: &str,
     filters: Vec<SearchFilter>,
-) -> Result<serde_json::Value, Status> {
+) -> Result<Vec<SearchResult>, Status> {
     let mut query: String;
     let is_provides: bool = filters.contains(&SearchFilter::Provides);
 
@@ -89,7 +88,6 @@ async fn search_by_filters(
         .bind(pkg_name)
         .fetch_all(&mut **db)
         .await
-        .map(|ret| serde_json::json!(ret))
         .map_err(|e| {
             println!("{e} ({})", &query);
             Status::InternalServerError
@@ -102,9 +100,16 @@ pub async fn search(
     q: &str,
     filter: Option<Vec<SearchFilter>>,
 ) -> Result<serde_json::Value, Status> {
+    let mut results: Vec<SearchResult> = vec![];
+
     if let Some(filters) = filter {
-        search_by_filters(db, q, filters).await
+        results.append(&mut search_by_filters(db, q, filters).await?);
     } else {
-        search_by_name(db, q).await
+        results.append(&mut search_by_name(db, q).await?)
     }
+
+    Ok(serde_json::json!({
+      "length": results.len(),
+     "results": results
+    }))
 }
