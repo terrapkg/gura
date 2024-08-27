@@ -21,6 +21,7 @@ extern crate rocket;
 mod api;
 mod authentication;
 mod database;
+mod error;
 mod models;
 
 use database::Database;
@@ -46,4 +47,5 @@ fn rocket() -> _ {
         .attach(RpmSqlite::init())
         .mount("/", routes![index, health])
         .mount("/api", api::routes())
+        .register("/", catchers![error::default_catcher])
 }
