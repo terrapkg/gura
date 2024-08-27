@@ -16,7 +16,7 @@
 use serde::Serialize;
 use sqlx::FromRow;
 
-#[derive(FromRow, Serialize, Debug)]
+#[derive(FromRow, Serialize, Debug, Clone)]
 pub struct Package {
     #[sqlx(rename = "pkgId")]
     pub id: String,
@@ -32,6 +32,19 @@ pub struct Package {
     pub url: String,
     pub time_file: i32,
     pub time_build: i32,
+}
+
+#[derive(Serialize, Debug)]
+pub struct GroupedPackage {
+    pub ids: Vec<String>, // Return both package IDs in case more details is wanted about a specific variant
+    pub archs: Vec<String>,
+
+    pub name: String,
+    pub version: String,
+    pub release: String,
+    pub summary: String,
+    pub description: String,
+    pub url: String,
 }
 
 impl PartialEq for Package {

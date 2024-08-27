@@ -17,6 +17,7 @@ mod package;
 mod repodata;
 mod search;
 
+pub use package::GroupedPackage;
 pub use package::Package;
 pub use repodata::Repodata;
 pub use search::SearchFilter;
