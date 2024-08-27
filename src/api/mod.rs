@@ -21,7 +21,8 @@ mod search;
 
 pub fn routes() -> Vec<Route> {
     routes![
-        package::get_package,
+        package::get_package_by_id,
+        package::get_package_by_name,
         repo_update::repo_update,
         search::search
     ]
