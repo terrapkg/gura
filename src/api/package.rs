@@ -31,7 +31,13 @@ pub async fn get_package_by_id(
         .fetch_one(&mut **db)
         .await
         .map(|ret| serde_json::json!(ret))
-        .map_err(|_| Status::InternalServerError)
+        .map_err(|e| {
+            println!("{:?}", e);
+            match e {
+                sqlx::Error::RowNotFound => Status::NotFound,
+                _ => Status::InternalServerError,
+            }
+        })
 }
 
 #[get("/packages/name/<name>?<all>")]
@@ -44,13 +50,19 @@ pub async fn get_package_by_name(
         .bind(name)
         .fetch_all(&mut **db)
         .await
-        .map_err(|_| Status::InternalServerError)?;
+        .map_err(|e| {
+            println!("{:?}", e);
+            match e {
+                sqlx::Error::RowNotFound => Status::NotFound,
+                _ => Status::InternalServerError,
+            }
+        })?;
 
     // TODO: make sure we're only returning two packages here
     // If not, filter all of them
     if all && (query[0] == query[1]) {
         Ok(serde_json::json!(query))
-    } else {
+    } else if !query.is_empty() {
         let first = query[0].clone();
 
         let ids = query.iter().map(|x| x.clone().id).collect::<Vec<String>>();
@@ -70,5 +82,7 @@ pub async fn get_package_by_name(
             url: first.url,
         };
         Ok(serde_json::json!(grouped))
+    } else {
+        Err(Status::NotFound)
     }
 }
