@@ -145,7 +145,7 @@ impl<'r, D: Database> FromRequest<'r> for Reloader<D> {
     }
 }
 
-impl<'a, D: Database> Sentinel for Reloader<D> {
+impl<D: Database> Sentinel for Reloader<D> {
     fn abort(rocket: &Rocket<Ignite>) -> bool {
         D::fetch(rocket).is_none()
     }

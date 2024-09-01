@@ -45,9 +45,9 @@ fn get_filter_string(filter: &str, filter_added: &mut bool) -> String {
     let mut filter_string: String;
 
     if *filter_added {
-        filter_string = String::from(format!(" OR {filter} "));
+        filter_string = format!(" OR {filter} ");
     } else {
-        filter_string = String::from(format!(" WHERE {filter} "));
+        filter_string = format!(" WHERE {filter} ");
         *filter_added = true;
     }
 

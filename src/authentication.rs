@@ -26,11 +26,10 @@ lazy_static::lazy_static! {
   pub static ref JWT_KEY: HS256Key = HS256Key::from_bytes(&STANDARD_NO_PAD.decode(std::env::var("JWT_KEY").unwrap()).unwrap());
 }
 
-pub struct ApiAuth {
-    pub token: String,
-}
+pub struct ApiAuth {}
 
 #[derive(Serialize, Deserialize)]
+
 pub struct CustomClaims {
     // Admin is the only supported scope
     scopes: Vec<String>,
@@ -65,14 +64,10 @@ impl<'r> FromRequest<'r> for ApiAuth {
             let options = VerificationOptions::default();
             if let Ok(claims) = JWT_KEY.verify_token::<CustomClaims>(token, Some(options)) {
                 return match claims.custom.scopes.contains(&"admin".to_string()) {
-                    true => request::Outcome::Success(ApiAuth {
-                        token: token.to_string(),
-                    }),
+                    true => request::Outcome::Success(ApiAuth {}),
                     false => request::Outcome::Error((Status::Forbidden, ApiError::NoAdminScope)),
                 };
             };
-
-            return request::Outcome::Error((Status::Forbidden, ApiError::NoAdminScope));
         }
         request::Outcome::Error((Status::Forbidden, ApiError::Nil))
     }
