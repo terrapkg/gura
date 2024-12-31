@@ -32,6 +32,12 @@ pub struct Package {
     pub url: String,
     pub time_file: i32,
     pub time_build: i32,
+    #[sqlx(rename = "rpm_license")]
+    pub license: String,
+    #[sqlx(rename = "rpm_group")]
+    pub category: String,
+    #[sqlx(rename = "rpm_packager")]
+    pub packager: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -45,6 +51,9 @@ pub struct GroupedPackage {
     pub summary: String,
     pub description: String,
     pub url: String,
+    pub license: String,
+    pub category: String,
+    pub packager: String,
 }
 
 impl PartialEq for Package {
