@@ -49,8 +49,6 @@ pub struct GroupedPackage {
 
 impl PartialEq for Package {
     fn eq(&self, other: &Self) -> bool {
-        (self.name == other.name)
-            && (self.version == other.version)
-            && (self.release == other.release)
+        self.name == other.name
     }
 }
