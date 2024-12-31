@@ -58,31 +58,42 @@ pub async fn get_package_by_name(
             }
         })?;
 
-    // TODO: make sure we're only returning two packages here
-    // If not, filter all of them
-    if all && (query[0] == query[1]) {
-        Ok(serde_json::json!(query))
-    } else if !query.is_empty() {
-        let first = query[0].clone();
-
-        let ids = query.iter().map(|x| x.clone().id).collect::<Vec<String>>();
-        let archs = query
-            .iter()
-            .map(|x| x.clone().arch)
-            .collect::<Vec<String>>();
-
-        let grouped = GroupedPackage {
-            ids,
-            archs,
-            name: first.name,
-            version: first.version,
-            release: first.release,
-            summary: first.summary,
-            description: first.description,
-            url: first.url,
-        };
-        Ok(serde_json::json!(grouped))
-    } else {
-        Err(Status::NotFound)
+    if query.is_empty() {
+        return Err(Status::NotFound);
     }
+
+    // Don't combine packages if all is set AND there's only one package AND all the packages are the same.
+    if all && (query.len() < 2 || query.windows(2).all(|q| q[0] == q[1])) {
+        return Ok(serde_json::json!(query));
+    }
+
+    let first = query[0].clone();
+
+    let ids = query.iter().map(|x| x.clone().id).collect::<Vec<String>>();
+    let archs = query
+        .iter()
+        .map(|x| x.clone().arch)
+        .collect::<Vec<String>>();
+    let mut version_differ = false;
+    let mut release_differ = false;
+
+    if query.len() > 1 {
+        version_differ = !query.windows(2).all(|q| q[0].version == q[1].version);
+        release_differ = !query.windows(2).all(|q| q[0].release == q[1].release);
+    }
+
+    let grouped = GroupedPackage {
+        ids,
+        archs,
+        name: first.name, // Is always the same
+        version: if version_differ { "Versions Differ".to_string() } else { first.version },
+        release: if release_differ { "Releases Differ".to_string() } else { first.release },
+        summary: first.summary,
+        description: first.description,
+        url: first.url,
+        license: first.license,
+        category: first.category,
+        packager: first.packager,
+    };
+    Ok(serde_json::json!(grouped))
 }
