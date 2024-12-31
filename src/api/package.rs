@@ -86,8 +86,16 @@ pub async fn get_package_by_name(
         ids,
         archs,
         name: first.name, // Is always the same
-        version: if version_differ { "Versions Differ".to_string() } else { first.version },
-        release: if release_differ { "Releases Differ".to_string() } else { first.release },
+        version: if version_differ {
+            "Versions Differ".to_string()
+        } else {
+            first.version
+        },
+        release: if release_differ {
+            "Releases Differ".to_string()
+        } else {
+            first.release
+        },
         summary: first.summary,
         description: first.description,
         url: first.url,
