@@ -15,11 +15,26 @@
 
 use crate::database::Connection;
 use crate::database::RpmSqlite;
+use sqlx::Row;
 
 use crate::models::GroupedPackage;
 use crate::models::Package;
 
 use rocket::http::Status;
+
+#[get("/packages/count")]
+pub async fn get_packages_count(mut db: Connection<RpmSqlite>) -> Result<String, Status> {
+    match sqlx::query("SELECT COUNT(*) AS c FROM packages")
+        .fetch_one(&mut **db)
+        .await
+    {
+        Ok(r) => Ok(format!("{}", r.get::<u64, &str>("c"))),
+        Err(err) => {
+            eprintln!("error {err}");
+            Err(Status::InternalServerError)
+        }
+    }
+}
 
 #[get("/packages/id/<id>")]
 pub async fn get_package_by_id(
@@ -32,7 +47,7 @@ pub async fn get_package_by_id(
         .await
         .map(|ret| serde_json::json!(ret))
         .map_err(|e| {
-            println!("{:?}", e);
+            println!("{e:?}");
             match e {
                 sqlx::Error::RowNotFound => Status::NotFound,
                 _ => Status::InternalServerError,
@@ -51,7 +66,7 @@ pub async fn get_package_by_name(
         .fetch_all(&mut **db)
         .await
         .map_err(|e| {
-            println!("{:?}", e);
+            println!("{e:?}");
             match e {
                 sqlx::Error::RowNotFound => Status::NotFound,
                 _ => Status::InternalServerError,
