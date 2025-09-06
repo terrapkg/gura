@@ -1,17 +1,19 @@
 package gura
 
 import (
-	"fmt"
 	"log"
-	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/kudari"
+	"github.com/terrapkg/gura/nobori"
 )
 
 var ver = "version is not set!"
 
-func health(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, ver)
+func getHealth(c *gin.Context) {
+	c.String(200, ver)
 }
 
 func main() {
@@ -20,8 +22,11 @@ func main() {
 		log.Fatalln("cannot load .env", err)
 	}
 
-	SetupDB()
+	db.SetupDB()
+	go kudari.FetchLoop()
+	go nobori.FetchLoop()
 
-	http.HandleFunc("/health", health)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	router := gin.Default()
+	router.GET("/health", getHealth)
+	router.Run("localhost:8080")
 }

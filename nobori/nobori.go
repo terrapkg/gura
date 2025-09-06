@@ -4,3 +4,6 @@
 // The name nobori (上り) is Japanese for "up".
 
 package nobori
+
+func FetchLoop() {
+}

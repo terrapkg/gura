@@ -1,8 +1,9 @@
-package gura
+package db
 
 import (
 	"log"
 	"os"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -27,10 +28,11 @@ type Pkg struct {
 	Metas []PkgMeta
 }
 type Repo struct {
-	//gorm.Model
 	ID    string
+	UpdAt time.Time
 	Links string
 	Type  RepoType
+	Fetch string
 }
 
 type RepoType int64
@@ -42,11 +44,10 @@ const (
 var DB *gorm.DB
 
 func SetupDB() {
-	db, err := gorm.Open(postgres.Open(os.Getenv("GURA_DSN")), &gorm.Config{})
+	DB, err := gorm.Open(postgres.Open(os.Getenv("GURA_DSN")), &gorm.Config{})
 	if err != nil {
 		log.Fatalln("cannot open db: ", err)
 	}
 
-	db.AutoMigrate(&PkgMeta{}, &Pkg{}, &Repo{})
-	DB = db
+	DB.AutoMigrate(&PkgMeta{}, &Pkg{}, &Repo{})
 }
