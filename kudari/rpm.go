@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/terrapkg/gura/db"
 )
 
@@ -51,95 +52,154 @@ type PrimaryXML struct {
 	Packages []PackageXML `xml:"package"`
 }
 
-func getRepomd(repo db.Repo) *Repomd {
-	resp, err := http.Get(fmt.Sprintf("%s/repodata/repomd.xml", repo.Fetch))
+func getRepomd(repoID, fetch string) *Repomd {
+	resp, err := http.Get(fmt.Sprintf("%s/repodata/repomd.xml", fetch))
 	if err != nil {
-		log.Printf("[%s] Failed to fetch repomd.xml: %v", repo.ID, err)
+		log.Printf("[%s] Failed to fetch repomd.xml: %v", repoID, err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[%s] HTTP error repomd: %d", repo.ID, resp.StatusCode)
+		log.Printf("[%s] HTTP error repomd: %d", repoID, resp.StatusCode)
 		return nil
 	}
-	log.Printf("[%s] decoding repomd.xml", repo.ID)
+	log.Printf("[%s] decoding repomd.xml", repoID)
 
 	decoder := xml.NewDecoder(resp.Body)
 	var repomd Repomd
 	if err := decoder.Decode(&repomd); err != nil {
-		log.Printf("[%s] Failed to parse repomd.xml: %v", repo.ID, err)
+		log.Printf("[%s] Failed to parse repomd.xml: %v", repoID, err)
 		return nil
 	}
-	log.Printf("[%s] repomd.xml decoded successfully", repo.ID)
+	log.Printf("[%s] repomd.xml decoded successfully", repoID)
 	return &repomd
 }
 
-func getPrimary(repo db.Repo, repomd Repomd) (primary *PrimaryXML) {
+func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	var primaryLocation string
+	var compression string
+
+	// Prefer zst over zck over gz
 	for _, data := range repomd.Data {
 		if data.Type == "primary" {
-			primaryLocation = data.Location.Href
-			break
+			href := data.Location.Href
+			switch {
+				case strings.HasSuffix(href, ".xml.zst"):
+					primaryLocation = href
+					compression = "zst"
+				// case strings.HasSuffix(href, ".xml.zck"):
+				// 	primaryLocation = href
+				// 	compression = "zck"
+				case strings.HasSuffix(href, ".xml.gz"):
+					primaryLocation = href
+					compression = "gz"
+				default:
+					log.Printf("[%s] Unsupported compression type for primary.xml: %s", repoID, href)
+			}
 		}
 	}
 	if primaryLocation == "" {
-		log.Printf("[%s] No 'primary' data found in repomd.xml", repo.ID)
+		log.Printf("[%s] No 'primary' data found in repomd.xml", repoID)
 		return
 	}
 
-	primaryURL := fmt.Sprintf("%s/%s", repo.Fetch, primaryLocation)
-	log.Printf("[%s] fetching primary.xml.gz", repo.ID)
+	primaryURL := fmt.Sprintf("%s/%s", fetch, primaryLocation)
+	log.Printf("[%s] fetching primary.xml.%s", repoID, compression)
 	resp, err := http.Get(primaryURL)
 	if err != nil {
-		log.Printf("[%s] Failed to fetch primary.xml.gz: %v", repo.ID, err)
+		log.Printf("[%s] Failed to fetch primary.xml.%s: %v", repoID, compression, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[%s] HTTP error fetching primary.xml.gz: %d", repo.ID, resp.StatusCode)
+		log.Printf("[%s] HTTP error fetching primary.xml.%s: %d", repoID, compression, resp.StatusCode)
 		return
 	}
 
-	gzReader, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		log.Printf("[%s] Failed to create gzip reader: %v", repo.ID, err)
+	var xmlReader any
+	switch compression {
+	case "gz":
+		gzReader, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			log.Printf("[%s] Failed to create gzip reader: %v", repoID, err)
+			return
+		}
+		defer gzReader.Close()
+		xmlReader = gzReader
+	case "zst":
+		zstdDecoder, err := zstd.NewReader(resp.Body)
+		if err != nil {
+			log.Printf("[%s] Failed to create zstd reader: %v", repoID, err)
+			return
+		}
+		defer zstdDecoder.Close()
+		xmlReader = zstdDecoder
+	default:
+		log.Printf("[%s] Unknown compression type for primary.xml: %s", repoID, compression)
 		return
 	}
-	defer gzReader.Close()
 
-	decoder := xml.NewDecoder(gzReader)
+	decoder := xml.NewDecoder(xmlReader.(interface{ Read([]byte) (int, error) }))
 	primary = &PrimaryXML{}
 	if err := decoder.Decode(primary); err != nil {
-		log.Printf("[%s] Failed to parse primary.xml: %v", repo.ID, err)
+		log.Printf("[%s] Failed to parse primary.xml: %v", repoID, err)
 		return
 	}
 
-	log.Printf("[%s] primary.xml decoded successfully", repo.ID)
+	log.Printf("[%s] primary.xml decoded successfully", repoID)
 	return
 }
 
-func rpmFetch(repo db.Repo) {
-	repomd := getRepomd(repo)
+func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
+	repomd := getRepomd(repo.ID, fetch)
 	if repomd == nil {
+		close(ch)
 		return
 	}
-	primary := getPrimary(repo, *repomd)
+	primary := getPrimary(repo.ID, fetch, *repomd)
 	if primary == nil {
+		close(ch)
 		return
 	}
-	log.Printf("[%s] adding %d packages to db", repo.ID, len(primary.Packages))
+	ch <- primary.Packages
+	close(ch)
+}
+
+func rpmFetch(repo db.Repo) {
+	chans := []chan []PackageXML{}
+	for fetch := range strings.SplitSeq(repo.Fetch, "\n") {
+		ch := make(chan []PackageXML)
+		chans = append(chans, ch)
+		go eachFetch(repo, fetch, ch)
+	}
 	var pkgs []db.Pkg
 	if err := db.DB.Where("repo_id = ? AND deleted_at IS NULL", repo.ID).Order("name, arch").Find(&pkgs).Error; err != nil {
 		log.Printf("[%s] Failed to list packages: %v", repo.ID, err)
 		return
 	}
+	packages := []PackageXML{}
+	seen := make(map[string]struct{})
+	for _, ch := range chans {
+		local_packages, ok := <-ch
+		if !ok {
+			continue
+		}
+		for _, pkg := range local_packages {
+			key := pkg.Name + "|" + pkg.Arch
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				packages = append(packages, pkg)
+			}
+		}
+	}
+	log.Printf("[%s] processing %d packages", repo.ID, len(packages))
 	var newpkgs []*db.Pkg
 	updated := 0
 	unchanged := 0
 	tx := db.DB.Begin()
-	for _, p := range primary.Packages {
+	for _, p := range packages {
 		n, found := slices.BinarySearchFunc(pkgs, db.Pkg {
 			Name: p.Name,
 			Arch: p.Arch,
@@ -177,7 +237,7 @@ func rpmFetch(repo db.Repo) {
 	}
 	tx.Delete(&db.Pkg{}, "id IN (?)", pkg_ids)
 	if newpkgs != nil {
-		tx.Create(newpkgs)
+		tx.CreateInBatches(newpkgs, 5000)
 	}
 	tx.Commit()
 	log.Printf("[%s] unchanged=%d, updated=%d, added=%d, deleted=%d", repo.ID, unchanged, updated, len(newpkgs), len(pkgs))
