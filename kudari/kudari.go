@@ -14,7 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-const fetchRepoTimer = 5000_000 * 60 // 5min
+// const fetchRepoTimer = 3e11 // 5min
+const fetchRepoTimer = 3e10 // 30s
 
 func fetch(repo db.Repo) {
 	log.Println("kudari: fetching:", repo.ID)
@@ -34,9 +35,6 @@ func fetch(repo db.Repo) {
 	go fetch(repo)
 }
 
-func rpmFetch(repo db.Repo) {
-}
-
 func FetchLoop() {
 	log.Println("kudari: scheduling fetch loop")
 	var repos []db.Repo
@@ -48,12 +46,13 @@ func FetchLoop() {
 	for i, repo := range repos {
 		timeSinceFetch := time.Since(repo.UpdAt).Nanoseconds()
 		if fetchRepoTimer < timeSinceFetch {
-			log.Printf("kudari: [%d/%d] run now (%s UpdAt %s)\n", i, r.RowsAffected, repo.ID, repo.UpdAt)
+			log.Printf("kudari: [%d/%d] run now (%s UpdAt %s)\n", i+1, r.RowsAffected, repo.ID, repo.UpdAt)
 			go fetch(repo)
+			continue
 		}
 		go func() {
 			dur := time.Duration(fetchRepoTimer - timeSinceFetch)
-			log.Printf("kudari: [%d/%d] sched dur=%.0fs (Repo.ID = %s)\n", i, r.RowsAffected, dur.Seconds(), repo.ID)
+			log.Printf("kudari: [%d/%d] sched dur=%.0fs (Repo.ID = %s)\n", i+1, r.RowsAffected, dur.Seconds(), repo.ID)
 			time.Sleep(dur)
 			go fetch(repo)
 		}()

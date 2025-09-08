@@ -19,8 +19,8 @@ const (
 
 // PkgMeta stores arbitrary metadata for a package.
 type PkgMeta struct {
-	ID    uuid.UUID `gorm:"type:uuid;primaryKey"`
-	PkgID uuid.UUID `gorm:"type:uuid;index"`
+	ID    uuid.UUID `gorm:"primaryKey"`
+	PkgID uuid.UUID `gorm:"index"`
 	Key   string
 	Val   string
 }
@@ -35,23 +35,20 @@ func (m *PkgMeta) BeforeCreate(tx *gorm.DB) (err error) {
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        uuid.UUID      `gorm:"type:uuid;primaryKey"`
-	CreatedAt time.Time      `gorm:"autoCreateTime"`
-	UpdatedAt time.Time      `gorm:"autoUpdateTime"`
+	ID        uuid.UUID `gorm:"primaryKey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 
 	Name    string
 	FullVer string
-	// compatible version string between repos
-	Ver  string
-	Arch string
+	Ver     string // compatible version string between repos
+	Arch    string
 
-	// RepoID is a string (not a UUID). Repositories are identified by string IDs.
-	RepoID string `gorm:"index;type:text"`
-	// Foreign key relationship referencing Repo.ID (string).
-	Repo Repo `gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;foreignKey:RepoID;references:ID"`
+	RepoID string // RepoID is a string (not a UUID). Repositories are identified by string IDs.
+	Repo Repo // Foreign key relationship referencing Repo.ID (string).
 
-	Metas []PkgMeta `gorm:"foreignKey:PkgID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Metas []PkgMeta
 }
 
 // BeforeCreate sets a UUID for Pkg if not provided.
@@ -62,26 +59,10 @@ func (p *Pkg) BeforeCreate(tx *gorm.DB) (err error) {
 	return nil
 }
 
-func ListAllPkgs() ([]Pkg, error) {
-	var pkgs []Pkg
-	if err := DB.Find(&pkgs).Error; err != nil {
-		return nil, err
-	}
-	return pkgs, nil
-}
-
-func GetPackageByID(id uuid.UUID) (*Pkg, error) {
-	var pkg Pkg
-	if err := DB.Where("id = ?", id).First(&pkg).Error; err != nil {
-		return nil, err
-	}
-	return &pkg, nil
-}
-
 // Repo represents a package repository. Its ID is a string.
 type Repo struct {
-	ID    string    `gorm:"primaryKey;type:text"`
-	UpdAt time.Time `gorm:"autoUpdateTime"`
+	ID    string    `gorm:"primaryKey"`
+	UpdAt time.Time //`gorm:"autoUpdateTime"`
 	Links string
 	Type  RepoType
 	Fetch string

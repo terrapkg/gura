@@ -39,7 +39,7 @@ func SetupRouter(opts RouterSetupOpts) *gin.Engine {
 
 func getPackage(c *gin.Context) {
 	id := c.Param("id")
-	pkg, err := db.GetPackageByID(uuid.MustParse(id))
+	pkg, err := GetPackageByID(uuid.MustParse(id))
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
@@ -49,7 +49,7 @@ func getPackage(c *gin.Context) {
 
 func packageRouteGroup(group *gin.RouterGroup) {
 	group.GET("/", func(c *gin.Context) {
-		pkgs, err := db.ListAllPkgs()
+		pkgs, err := ListAllPkgs()
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -57,4 +57,20 @@ func packageRouteGroup(group *gin.RouterGroup) {
 		c.JSON(200, pkgs)
 	})
 	group.GET("/:id", getPackage)
+}
+
+func ListAllPkgs() ([]db.Pkg, error) {
+	var pkgs []db.Pkg
+	if err := db.DB.Find(&pkgs).Error; err != nil {
+		return nil, err
+	}
+	return pkgs, nil
+}
+
+func GetPackageByID(id uuid.UUID) (*db.Pkg, error) {
+	var pkg db.Pkg
+	if err := db.DB.Where("id = ?", id).First(&pkg).Error; err != nil {
+		return nil, err
+	}
+	return &pkg, nil
 }
