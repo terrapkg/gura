@@ -85,17 +85,17 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 		if data.Type == "primary" {
 			href := data.Location.Href
 			switch {
-				case strings.HasSuffix(href, ".xml.zst"):
-					primaryLocation = href
-					compression = "zst"
-				// case strings.HasSuffix(href, ".xml.zck"):
-				// 	primaryLocation = href
-				// 	compression = "zck"
-				case strings.HasSuffix(href, ".xml.gz"):
-					primaryLocation = href
-					compression = "gz"
-				default:
-					log.Printf("[%s] Unsupported compression type for primary.xml: %s", repoID, href)
+			case strings.HasSuffix(href, ".xml.zst"):
+				primaryLocation = href
+				compression = "zst"
+			// case strings.HasSuffix(href, ".xml.zck"):
+			// 	primaryLocation = href
+			// 	compression = "zck"
+			case strings.HasSuffix(href, ".xml.gz"):
+				primaryLocation = href
+				compression = "gz"
+			default:
+				log.Printf("[%s] Unsupported compression type for primary.xml: %s", repoID, href)
 			}
 		}
 	}
@@ -180,69 +180,101 @@ func rpmFetch(repo db.Repo) {
 		return
 	}
 	packages := []PackageXML{}
-	seen := make(map[string]struct{})
 	for _, ch := range chans {
 		local_packages, ok := <-ch
 		if !ok {
 			continue
 		}
 		for _, pkg := range local_packages {
-			key := pkg.Name + "|" + pkg.Arch
-			if _, exists := seen[key]; !exists {
-				seen[key] = struct{}{}
-				packages = append(packages, pkg)
-			}
+			insertSortedDedup(&packages, pkg)
 		}
 	}
 	log.Printf("[%s] processing %d packages", repo.ID, len(packages))
 	var newpkgs []*db.Pkg
 	updated := 0
 	unchanged := 0
+	lastIdx := 0
+	walked := make([]bool, len(pkgs))
 	tx := db.DB.Begin()
 	for _, p := range packages {
-		n, found := slices.BinarySearchFunc(pkgs, db.Pkg {
-			Name: p.Name,
-			Arch: p.Arch,
-		}, func (a, b db.Pkg) (i int) {
-			if i = strings.Compare(a.Name, b.Name); i == 0 {
-				return strings.Compare(a.Arch, b.Arch)
+		found := false
+		for i := lastIdx; i < len(pkgs); i++ {
+			cmp := Compare(PackageXML{
+				Name: pkgs[i].Name,
+				Arch: pkgs[i].Arch,
+			}, p)
+			if cmp < 0 {
+				// pkgs[i] < p, advance lastIdx
+				lastIdx = i + 1
+				continue
+			} else if cmp == 0 {
+				found = true
+				lastIdx = i
+				break
+			} else {
+				// pkgs[i] > p, so p does not exist in pkgs
+				lastIdx = i
+				break
 			}
-			return i
-		})
+		}
 		if found {
+			n := lastIdx
+			lastIdx++ // next search should start from the next index
 			fullver := fullVer(p)
 			if fullver == pkgs[n].FullVer {
-				pkgs = slices.Delete(pkgs, n, n+1)
+				walked[n] = true
 				unchanged++
 				continue
 			}
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
 			tx.Save(&pkgs[n])
-			pkgs = slices.Delete(pkgs, n, n+1)
+			walked[n] = true
 			updated++
 		} else {
-			newpkgs = append(newpkgs, &db.Pkg {
-				Name: p.Name,
+			newpkgs = append(newpkgs, &db.Pkg{
+				Name:    p.Name,
 				FullVer: fullVer(p),
-				Ver: p.Version.Ver,
-				Arch: p.Arch,
-				RepoID: repo.ID,
+				Ver:     p.Version.Ver,
+				Arch:    p.Arch,
+				RepoID:  repo.ID,
 			})
 		}
 	}
-	var pkg_ids []uuid.UUID
-	for _, p := range pkgs {
-		pkg_ids = append(pkg_ids, p.ID)
+	var deletes []uuid.UUID
+	for i, p := range pkgs {
+		if !walked[i] {
+			deletes = append(deletes, p.ID)
+		}
 	}
-	tx.Delete(&db.Pkg{}, "id IN (?)", pkg_ids)
+	tx.Delete(&db.Pkg{}, "id IN (?)", deletes)
 	if newpkgs != nil {
 		tx.CreateInBatches(newpkgs, 5000)
 	}
 	tx.Commit()
-	log.Printf("[%s] unchanged=%d, updated=%d, added=%d, deleted=%d", repo.ID, unchanged, updated, len(newpkgs), len(pkgs))
+	log.Printf("[%s] unchanged=%d, updated=%d, added=%d, deleted=%d", repo.ID, unchanged, updated, len(newpkgs), len(deletes))
 }
 
 func fullVer(p PackageXML) string {
 	return fmt.Sprintf("%s:%s-%s", p.Version.Epoch, p.Version.Ver, p.Version.Rel)
+}
+
+func Compare(a, b PackageXML) int {
+	if cmp := strings.Compare(a.Name, b.Name); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(a.Arch, b.Arch)
+}
+
+// Insert into sorted slice, deduplicating
+func insertSortedDedup(packages *[]PackageXML, pkg PackageXML) {
+	idx, found := slices.BinarySearchFunc(*packages, pkg, Compare)
+	if found {
+		// Duplicate, skip
+		return
+	}
+	// Insert at idx to keep sorted
+	*packages = append(*packages, PackageXML{}) // grow slice
+	copy((*packages)[idx+1:], (*packages)[idx:])
+	(*packages)[idx] = pkg
 }
