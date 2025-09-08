@@ -19,3 +19,11 @@
 
 ## Building
 Please set `-ldflags '-X main.ver=1.2.3` (insert the correct version)
+
+## Running
+
+```
+export DSN="host=localhost user=postgres password=postgres dbname=gura port=5432 sslmode=disable"
+export GURA_LISTEN_ADDRESS=":8080"
+./gura
+```

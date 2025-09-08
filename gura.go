@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/joho/godotenv"
 	"github.com/terrapkg/gura/api"
@@ -27,6 +28,11 @@ func main() {
 	go nobori.FetchLoop()
 
 	router := api.SetupRouter(router_opts)
-	log.Println("Starting server on localhost:8080")
-	router.Run(":8080")
+	var listen_address = ":8080"
+	laddress := os.Getenv("GURA_LISTEN_ADDRESS")
+	if laddress != "" {
+		listen_address = laddress
+	}
+
+	router.Run(listen_address)
 }
