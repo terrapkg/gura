@@ -52,6 +52,7 @@ type PrimaryXML struct {
 	Packages []PackageXML `xml:"package"`
 }
 
+// Obtain [Repomd] from a repository
 func getRepomd(repoID, fetch string) *Repomd {
 	resp, err := http.Get(fmt.Sprintf("%s/repodata/repomd.xml", fetch))
 	if err != nil {
@@ -76,11 +77,11 @@ func getRepomd(repoID, fetch string) *Repomd {
 	return &repomd
 }
 
+// Obtain [PrimaryXML] from a repository
 func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	var primaryLocation string
 	var compression string
 
-	// Prefer zst over zck over gz
 	for _, data := range repomd.Data {
 		if data.Type == "primary" {
 			href := data.Location.Href
@@ -174,7 +175,7 @@ func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
 func rpmFetch(repo db.Repo) {
 	chans := []chan []PackageXML{}
 	for fetch := range strings.SplitSeq(repo.Fetch, "\n") {
-		ch := make(chan []PackageXML)
+		ch := make(chan []PackageXML, 1)
 		chans = append(chans, ch)
 		go eachFetch(repo, fetch, ch)
 	}
@@ -183,11 +184,12 @@ func rpmFetch(repo db.Repo) {
 		log.Printf("[%s] Failed to list packages: %v", repo.ID, err)
 		return
 	}
-	var allSlices [][]PackageXML
+	allSlices := make([][]PackageXML, len(chans))
 	for _, ch := range chans {
 		local_packages, ok := <-ch
 		if !ok {
-			continue
+			log.Printf("[%s] stop, couldn't fetch primary", repo.ID)
+			return
 		}
 		allSlices = append(allSlices, local_packages)
 	}
