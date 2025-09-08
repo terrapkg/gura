@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
 	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/util"
 )
 
 type Repomd struct {
@@ -118,7 +118,7 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 		return
 	}
 
-	var xmlReader any
+	var xmlReader interface{ Read([]byte) (int, error) }
 	switch compression {
 	case "gz":
 		gzReader, err := gzip.NewReader(resp.Body)
@@ -141,7 +141,7 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 		return
 	}
 
-	decoder := xml.NewDecoder(xmlReader.(interface{ Read([]byte) (int, error) }))
+	decoder := xml.NewDecoder(xmlReader)
 	primary = &PrimaryXML{}
 	if err := decoder.Decode(primary); err != nil {
 		log.Printf("[%s] Failed to parse primary.xml: %v", repoID, err)
@@ -152,6 +152,9 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	return
 }
 
+// Obtain a sorted list of [PackageXML] structs for each package in the primary.xml file.
+//
+// Sorting is defined by [Compare].
 func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
 	repomd := getRepomd(repo.ID, fetch)
 	if repomd == nil {
@@ -163,6 +166,7 @@ func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
 		close(ch)
 		return
 	}
+	util.InsertionSort(&primary.Packages, Compare) // ensure sorted, though usually already sorted
 	ch <- primary.Packages
 	close(ch)
 }
@@ -179,16 +183,15 @@ func rpmFetch(repo db.Repo) {
 		log.Printf("[%s] Failed to list packages: %v", repo.ID, err)
 		return
 	}
-	packages := []PackageXML{}
+	var allSlices [][]PackageXML
 	for _, ch := range chans {
 		local_packages, ok := <-ch
 		if !ok {
 			continue
 		}
-		for _, pkg := range local_packages {
-			insertSortedDedup(&packages, pkg)
-		}
+		allSlices = append(allSlices, local_packages)
 	}
+	packages := util.MergeSortedDedup(allSlices, Compare)
 	log.Printf("[%s] processing %d packages", repo.ID, len(packages))
 	var newpkgs []*db.Pkg
 	updated := 0
@@ -197,39 +200,23 @@ func rpmFetch(repo db.Repo) {
 	walked := make([]bool, len(pkgs))
 	tx := db.DB.Begin()
 	for _, p := range packages {
-		found := false
-		for i := lastIdx; i < len(pkgs); i++ {
-			cmp := Compare(PackageXML{
-				Name: pkgs[i].Name,
-				Arch: pkgs[i].Arch,
-			}, p)
-			if cmp < 0 {
-				// pkgs[i] < p, advance lastIdx
-				lastIdx = i + 1
-				continue
-			} else if cmp == 0 {
-				found = true
-				lastIdx = i
-				break
-			} else {
-				// pkgs[i] > p, so p does not exist in pkgs
-				lastIdx = i
-				break
-			}
-		}
-		if found {
+		if util.SortedContSearch(pkgs, p, func(a db.Pkg, b PackageXML) int {
+			return Compare(PackageXML{
+				Name: a.Name,
+				Arch: a.Arch,
+			}, b)
+		}, &lastIdx) {
 			n := lastIdx
 			lastIdx++ // next search should start from the next index
 			fullver := fullVer(p)
+			walked[n] = true
 			if fullver == pkgs[n].FullVer {
-				walked[n] = true
 				unchanged++
 				continue
 			}
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
 			tx.Save(&pkgs[n])
-			walked[n] = true
 			updated++
 		} else {
 			newpkgs = append(newpkgs, &db.Pkg{
@@ -264,17 +251,4 @@ func Compare(a, b PackageXML) int {
 		return cmp
 	}
 	return strings.Compare(a.Arch, b.Arch)
-}
-
-// Insert into sorted slice, deduplicating
-func insertSortedDedup(packages *[]PackageXML, pkg PackageXML) {
-	idx, found := slices.BinarySearchFunc(*packages, pkg, Compare)
-	if found {
-		// Duplicate, skip
-		return
-	}
-	// Insert at idx to keep sorted
-	*packages = append(*packages, PackageXML{}) // grow slice
-	copy((*packages)[idx+1:], (*packages)[idx:])
-	(*packages)[idx] = pkg
 }
