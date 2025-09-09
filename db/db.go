@@ -35,7 +35,7 @@ func (m *PkgMeta) BeforeCreate(tx *gorm.DB) (err error) {
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        uuid.UUID `gorm:"primaryKey"`
+	ID        uuid.UUID `gorm:"primaryKey,unique"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
