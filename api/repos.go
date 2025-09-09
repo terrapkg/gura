@@ -16,6 +16,7 @@ func repoPackageRouteGroup(group *gin.RouterGroup) {
 		group.GET("/", fetchRepo)
 		group.POST("/", createRepo)
 		group.DELETE("/", deleteRepo)
+		group.PATCH("/", updateRepo)
 	}
 }
 
@@ -120,8 +121,38 @@ func createRepo(c *gin.Context) {
 		return
 	}
 
-	// At this point, repo does not exist (or was not found). Create it.
-	// Persisting the repo is not implemented here (depends on db package),
-	// so respond with success for now.
 	c.JSON(201, res)
+}
+
+func updateRepo(c *gin.Context) {
+	repo_id := c.Param("repo")
+
+	var repo db.Repo
+
+	if err := c.ShouldBindJSON(&repo); err != nil {
+		c.JSON(400, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	if repo.ID != repo_id {
+		c.JSON(400, gin.H{"error": "Repo ID in URL and body do not match"})
+		return
+	}
+
+	existingRepo, err := db.RepoFetch(repo_id)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if existingRepo == nil {
+		c.JSON(404, gin.H{"error": "Repo not found"})
+		return
+	}
+
+	if err := repo.Update(); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, repo)
 }

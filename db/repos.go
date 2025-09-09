@@ -44,3 +44,10 @@ func (r Repo) Delete() error {
 	}
 	return nil
 }
+
+func (r Repo) Update() error {
+	if err := DB.Save(&r).Error; err != nil {
+		return err
+	}
+	return nil
+}
