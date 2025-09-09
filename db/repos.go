@@ -38,16 +38,10 @@ func RepoCreate(repo_id string, repo_type RepoType) (*Repo, error) {
 
 // method to delete a repo
 // Repo.Delete()
-func (r Repo) Delete() error {
-	if err := DB.Delete(&r).Error; err != nil {
-		return err
-	}
-	return nil
+func (r *Repo) Delete() error {
+	return DB.Delete(r).Error
 }
 
-func (r Repo) Update() error {
-	if err := DB.Save(&r).Error; err != nil {
-		return err
-	}
-	return nil
+func (r *Repo) Update() error {
+	return DB.Save(r).Error
 }

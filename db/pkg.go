@@ -21,22 +21,17 @@ func PkgFetch(pkg_id uuid.UUID) (*Pkg, error) {
 }
 
 func SubmitPkg(pkg *Pkg) (*Pkg, error) {
-	// Don't actually take the package ID when submitting, we'll generate a new one.
-	pkg.ID = uuid.Nil
-	pkg.CreatedAt = DB.NowFunc()
-	pkg.UpdatedAt = DB.NowFunc()
-	if err := DB.Create(pkg).Error; err != nil {
-		return nil, err
-	}
-	return pkg, nil
+    if err := DB.Create(pkg).Error; err != nil {
+        return nil, err
+    }
+    return pkg, nil
 }
 
 func (p *Pkg) Update() error {
-	p.UpdatedAt = DB.NowFunc()
-	if err := DB.Save(p).Error; err != nil {
-		return err
-	}
-	return nil
+    if err := DB.Save(p).Error; err != nil {
+        return err
+    }
+    return nil
 }
 
 func (p *Pkg) Delete() error {

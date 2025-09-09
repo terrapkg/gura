@@ -28,8 +28,8 @@ type PkgMeta struct {
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
 	ID        uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt time.Time `gorm:"autoCreateTime"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 
 	Name    string
@@ -47,7 +47,7 @@ type Pkg struct {
 // Repo represents a package repository. Its ID is a string.
 type Repo struct {
 	ID    string    `gorm:"primaryKey"`
-	UpdAt time.Time //`gorm:"autoUpdateTime"`
+	UpdAt time.Time `gorm:"autoUpdateTime"`
 	Links string
 	Type  RepoType
 	Fetch string
