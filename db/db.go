@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -19,38 +20,38 @@ const (
 
 // PkgMeta stores arbitrary metadata for a package.
 type PkgMeta struct {
-	ID    uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey"`
-	PkgID uuid.UUID `gorm:"not null;index;constraint:OnDelete:CASCADE"`
-	Key   string
-	Val   string
+	ID    uuid.UUID      `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey" json:"id"`
+	PkgID uuid.UUID      `gorm:"not null;index;constraint:OnDelete:CASCADE" json:"pkg_id"`
+	Key   string         `gorm:"not null;index" json:"key"`
+	Data  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"data"`
 }
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey"`
-	CreatedAt time.Time `gorm:"autoCreateTime"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime"`
-	DeletedAt gorm.DeletedAt `gorm:"index"`
+	ID        datatypes.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey" json:"id"`
+	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 
-	Name    string
-	FullVer string
-	Ver     string // compatible version string between repos
-	Arch    string
+	Name    string `json:"name"`
+	FullVer string `json:"full_ver"`
+	Ver     string `json:"ver"`
+	Arch    string `json:"arch"`
 	// RepoID is a string (not a UUID). Repositories are identified by string IDs.
-	RepoID string `gorm:"not null;index"`
+	RepoID string `gorm:"not null;index" json:"repo_id"`
 	// Foreign key relationship referencing Repo.ID (string).
-	Repo Repo `gorm:"constraint:OnDelete:CASCADE;foreignKey:RepoID;references:ID"`
+	Repo Repo `gorm:"constraint:OnDelete:CASCADE;foreignKey:RepoID;references:ID" json:"-"`
 
 	Metas []PkgMeta
 }
 
 // Repo represents a package repository. Its ID is a string.
 type Repo struct {
-	ID    string    `gorm:"primaryKey"`
-	UpdAt time.Time `gorm:"autoUpdateTime"`
-	Links string
-	Type  RepoType
-	Fetch string
+	ID    string    `gorm:"primaryKey" json:"id"`
+	UpdAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	Links string    `json:"links"`
+	Type  RepoType  `json:"type"`
+	Fetch string    `json:"fetch"`
 }
 
 var DB *gorm.DB
