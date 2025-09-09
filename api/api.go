@@ -9,7 +9,6 @@ import (
 	"log"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // Holds options for routing settings,
@@ -37,14 +36,3 @@ func SetupRouter(opts RouterSetupOpts) *gin.Engine {
 
 	return router
 }
-
-func getPackage(c *gin.Context) {
-	id := c.Param("id")
-	pkg, err := GetPackageByID(uuid.MustParse(id))
-	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, pkg)
-}
-
