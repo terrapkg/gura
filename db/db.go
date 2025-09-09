@@ -19,23 +19,15 @@ const (
 
 // PkgMeta stores arbitrary metadata for a package.
 type PkgMeta struct {
-	ID    uuid.UUID `gorm:"primaryKey"`
-	PkgID uuid.UUID `gorm:"index"`
+	ID    uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey"`
+	PkgID uuid.UUID `gorm:"not null;index;constraint:OnDelete:CASCADE"`
 	Key   string
 	Val   string
 }
 
-// BeforeCreate ensures a UUID is set before inserting into DB.
-func (m *PkgMeta) BeforeCreate(tx *gorm.DB) (err error) {
-	if m.ID == uuid.Nil {
-		m.ID = uuid.New()
-	}
-	return nil
-}
-
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        uuid.UUID `gorm:"primaryKey,unique"`
+	ID        uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -44,19 +36,12 @@ type Pkg struct {
 	FullVer string
 	Ver     string // compatible version string between repos
 	Arch    string
-
-	RepoID string // RepoID is a string (not a UUID). Repositories are identified by string IDs.
-	Repo Repo // Foreign key relationship referencing Repo.ID (string).
+	// RepoID is a string (not a UUID). Repositories are identified by string IDs.
+	RepoID string `gorm:"not null;index"`
+	// Foreign key relationship referencing Repo.ID (string).
+	Repo Repo `gorm:"constraint:OnDelete:CASCADE;foreignKey:RepoID;references:ID"`
 
 	Metas []PkgMeta
-}
-
-// BeforeCreate sets a UUID for Pkg if not provided.
-func (p *Pkg) BeforeCreate(tx *gorm.DB) (err error) {
-	if p.ID == uuid.Nil {
-		p.ID = uuid.New()
-	}
-	return nil
 }
 
 // Repo represents a package repository. Its ID is a string.
