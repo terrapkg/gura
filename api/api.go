@@ -11,6 +11,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func JSONError(c *gin.Context, code int, msg string) {
+    c.JSON(code, gin.H{"error": msg})
+}
+
+
 // Holds options for routing settings,
 // right now only contains version string,
 // but will be expanded in the future.

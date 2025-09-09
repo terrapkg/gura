@@ -8,6 +8,13 @@ import (
 	"github.com/terrapkg/gura/db"
 )
 
+type RepoPatch struct {
+	ID    *string      `json:"id"`
+	Type  *db.RepoType `json:"type"`
+	Links *string      `json:"links"`
+	Fetch *string      `json:"fetch"`
+}
+
 // /repos/:repo/ routes
 func repoPackageRouteGroup(group *gin.RouterGroup) {
 	group.GET("/packages", listPkgsByRepo)
@@ -27,7 +34,7 @@ func listPkgsByRepo(c *gin.Context) {
 	var pkgs []db.Pkg
 	if err := db.DB.Where("repo_id = ?", repoID).Find(&pkgs).Error; err != nil {
 		log.Println("listPkgsByRepo: err:", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	c.JSON(200, pkgs)
@@ -38,11 +45,11 @@ func deleteRepo(c *gin.Context) {
 	repo, err := db.RepoFetch(repoID)
 	if err != nil {
 		log.Println("deleteRepo: err:", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	if repo == nil {
-		c.JSON(404, gin.H{"error": "repo not found"})
+		JSONError(c, 404, "repo not found")
 		return
 	}
 
@@ -52,7 +59,7 @@ func deleteRepo(c *gin.Context) {
 
 	if err := repo.Delete(); err != nil {
 		log.Println("deleteRepo: delete err:", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	c.JSON(200, gin.H{"message": "repo deleted"})
@@ -63,11 +70,11 @@ func fetchRepo(c *gin.Context) {
 	repo, err := db.RepoFetch(repoID)
 	if err != nil {
 		log.Println("fetchRepo: err:", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	if repo == nil {
-		c.JSON(404, gin.H{"error": "repo not found"})
+		JSONError(c, 404, "repo not found")
 		return
 	}
 	c.JSON(200, repo)
@@ -83,7 +90,7 @@ func createRepo(c *gin.Context) {
 	}
 
 	if repoType != "rpm" {
-		c.JSON(400, gin.H{"error": "only 'rpm' repo type is supported at the moment"})
+		JSONError(c, 400, "only 'rpm' repo type is supported at the moment")
 		return
 	}
 
@@ -92,12 +99,12 @@ func createRepo(c *gin.Context) {
 	if err != nil {
 		// Real DB error
 		log.Println("createRepo: err:", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	if existingRepo != nil {
 		// Repo exists
-		c.JSON(409, gin.H{"error": fmt.Sprintf("repo `%s` already exists", repoID)})
+		JSONError(c, 409, fmt.Sprintf("repo `%s` already exists", repoID))
 		return
 	}
 
@@ -111,13 +118,13 @@ func createRepo(c *gin.Context) {
 	case "rpm":
 		rType = db.Rpm
 	default:
-		c.JSON(400, gin.H{"error": "unsupported repo type"})
+		JSONError(c, 400, "unsupported repo type")
 		return
 	}
 	res, err := db.RepoCreate(repoID, rType)
 	if err != nil {
 		log.Printf("createRepo: %v", err)
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 
@@ -125,34 +132,71 @@ func createRepo(c *gin.Context) {
 }
 
 func updateRepo(c *gin.Context) {
-	repo_id := c.Param("repo")
+	repoID := c.Param("repo")
 
-	var repo db.Repo
-
-	if err := c.ShouldBindJSON(&repo); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid JSON"})
-		return
-	}
-
-	if repo.ID != repo_id {
-		c.JSON(400, gin.H{"error": "Repo ID in URL and body do not match"})
-		return
-	}
-
-	existingRepo, err := db.RepoFetch(repo_id)
+	// Fetch existing repo first
+	existingRepo, err := db.RepoFetch(repoID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		JSONError(c, 500, err.Error())
 		return
 	}
 	if existingRepo == nil {
-		c.JSON(404, gin.H{"error": "Repo not found"})
+		JSONError(c, 404, "repo not found")
 		return
 	}
 
-	if err := repo.Update(); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	// Patch structure with pointer fields for partial updates.
+	// ID and Type are treated as immutable (cannot change).
+	var patch RepoPatch
+	if err := c.ShouldBindJSON(&patch); err != nil {
+		JSONError(c, 400, "invalid JSON")
 		return
 	}
 
-	c.JSON(200, repo)
+	// Reject empty body (no recognized fields)
+	if patch.ID == nil && patch.Type == nil && patch.Links == nil && patch.Fetch == nil {
+		JSONError(c, 400, "no updatable fields provided")
+		return
+	}
+
+	// Enforce immutability
+	if patch.ID != nil && *patch.ID != repoID {
+		JSONError(c, 400, "Repo ID is immutable")
+		return
+	}
+	if patch.Type != nil && *patch.Type != existingRepo.Type {
+		JSONError(c, 400, "Repo type is immutable")
+		return
+	}
+
+	changed := false
+
+	if patch.Links != nil {
+		if *patch.Links == "" {
+			JSONError(c, 400, "Links cannot be empty")
+			return
+		}
+		existingRepo.Links = *patch.Links
+		changed = true
+	}
+	if patch.Fetch != nil {
+		if *patch.Fetch == "" {
+			JSONError(c, 400, "Fetch cannot be empty")
+			return
+		}
+		existingRepo.Fetch = *patch.Fetch
+		changed = true
+	}
+
+	if !changed {
+		JSONError(c, 400, "no changes detected")
+		return
+	}
+
+	if err := existingRepo.Update(); err != nil {
+		JSONError(c, 500, err.Error())
+		return
+	}
+
+	c.JSON(200, existingRepo)
 }
