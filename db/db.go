@@ -18,11 +18,22 @@ const (
 	Rpm RepoType = iota
 )
 
+// ForgeType represents forge type enum.
+type ForgeType int64
+
+const (
+	GitHub ForgeType = iota
+)
+
 // Streams are grouped packages with the same upstream
 type Stream struct {
-	ID   uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	Link string    `json:"link"`
-	Ver  string    `json:"string"`
+	ID      uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	LastChk time.Time `json:"last_chk"`
+	LastUpd time.Time `json:"last_upd"`
+	Fetch   string    `json:"fetch"`
+	Forge   ForgeType `json:"forge"`
+	Ver     string    `json:"ver"`
+	Mirrors string    `json:"mirrors"`
 }
 
 // PkgMeta stores arbitrary metadata for a package.
@@ -80,7 +91,7 @@ func SetupDB() {
 	}
 
 	// AutoMigrate in an order that respects foreign keys.
-	if err := DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}); err != nil {
+	if err := DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}, &Stream{}); err != nil {
 		log.Fatalln("auto migrate failed: ", err)
 	}
 }
