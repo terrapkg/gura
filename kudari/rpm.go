@@ -174,7 +174,7 @@ func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
 
 func rpmFetch(repo db.Repo) {
 	chans := []chan []PackageXML{}
-	for _, fetch := range strings.Split(repo.Fetch, "\n") {
+	for fetch := range strings.SplitSeq(repo.Fetch, "\n") {
 		ch := make(chan []PackageXML, 1)
 		chans = append(chans, ch)
 		go eachFetch(repo, fetch, ch)

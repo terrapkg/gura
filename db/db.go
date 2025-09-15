@@ -18,9 +18,16 @@ const (
 	Rpm RepoType = iota
 )
 
+// Streams are grouped packages with the same upstream
+type Stream struct {
+	ID   uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	Link string    `json:"link"`
+	Ver  string    `json:"string"`
+}
+
 // PkgMeta stores arbitrary metadata for a package.
 type PkgMeta struct {
-	ID    uuid.UUID      `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey" json:"id"`
+	ID    uuid.UUID      `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	PkgID uuid.UUID      `gorm:"not null;index;constraint:OnDelete:CASCADE" json:"pkg_id"`
 	Key   string         `gorm:"not null;index" json:"key"`
 	Data  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"data"`
@@ -28,10 +35,10 @@ type PkgMeta struct {
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        datatypes.UUID `gorm:"type:uuid;default:gen_random_uuid();not null;primaryKey" json:"id"`
+	ID        datatypes.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+	DeletedAt gorm.DeletedAt `json:"deleted_at"`
 
 	Name    string `json:"name"`
 	FullVer string `json:"full_ver"`
@@ -43,6 +50,9 @@ type Pkg struct {
 	Repo Repo `gorm:"constraint:OnDelete:CASCADE;foreignKey:RepoID;references:ID" json:"-"`
 
 	Metas []PkgMeta
+
+	StreamID string `json:"stream_id"`
+	Stream   Stream `json:"-"`
 }
 
 // Repo represents a package repository. Its ID is a string.
