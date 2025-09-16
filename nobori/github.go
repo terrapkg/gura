@@ -1,6 +1,7 @@
 package nobori
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -9,18 +10,27 @@ import (
 	"strings"
 	"time"
 
+	ql "github.com/hasura/go-graphql-client"
 	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/util"
 )
 
 // ? https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
 // no more than 100 parallel requests
 var pool = make(chan db.Stream, 100)
 var tokens []Token
+var ql_current_token Token
+var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
+	func(r *http.Request) {
+		r.Header.Add("Authorization", "Bearer"+ql_current_token.key)
+	})
 
 type Token struct {
 	key   string
 	quota int16
 	reset time.Time
+	qlquo int16
+	qlrst time.Time
 }
 
 func fetchGitHub(stream db.Stream) {
@@ -100,12 +110,12 @@ func waitForFish(token Token) {
 func updToken(token *Token, resp *http.Response) {
 	quota, err := strconv.ParseInt(resp.Header.Get("x-ratelimit-remaining"), 10, 16)
 	if err != nil {
-		log.Fatalf("github: strconv x-ratelimit-remaining: %v", err, *token)
+		log.Fatalf("github: strconv x-ratelimit-remaining: %v", err)
 		return
 	}
 	reset, err := strconv.ParseInt(resp.Header.Get("x-ratelimit-reset"), 10, 64)
 	if err != nil {
-		log.Fatalf("github: strconv x-ratelimit-reset: %v", err, *token)
+		log.Fatalf("github: strconv x-ratelimit-reset: %v", err)
 		return
 	}
 	token.quota = int16(quota)
@@ -119,19 +129,93 @@ func swimGitHub() {
 		waitForFish(token)
 		for {
 			stream := <-pool
-			req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+stream.Fetch+"/tags", nil)
-			if err != nil {
-				log.Printf("github: req [%s]: %v", stream.Fetch, err)
-				continue
-			}
-			req.Header.Add("Authorization", "Bearer "+token.key)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				log.Printf("github: resp [%s]: %v", stream.Fetch, err)
-				continue
-			}
-			updToken(&token, resp)
-			// TODO: update stream
+			go func(stream db.Stream) {
+				fetch(&stream)
+				go schedule(stream)
+				db.DB.Save(stream)
+			}(stream)
 		}
+	}
+}
+
+/*
+func rest_tag(stream *db.Stream) {
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+stream.Fetch+"/tags", nil)
+	if err != nil {
+		log.Printf("github: req [%s]: %v", stream.Fetch, err)
+		continue
+	}
+	req.Header.Add("Authorization", "Bearer "+token.key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("github: resp [%s]: %v", stream.Fetch, err)
+		continue
+	}
+	updToken(&token, resp)
+	buf, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalln("github: can't read buf")
+	}
+	var v []struct {
+		name string
+	}
+	json.Unmarshal(buf, &v)
+	if stream.Ver != v[0].name {
+		stream.Ver = v[0].name
+		stream.LastUpd = time.Now()
+	}
+}*/
+
+type GHFetchType = int8
+
+const (
+	TAG GHFetchType = iota
+	RELEASE
+	QL
+)
+
+// ? https://stackoverflow.com/questions/19452244/github-api-v3-order-tags-by-creation-date
+type TagQL struct {
+	Repository struct {
+		Refs struct {
+			edges []struct {
+				node struct {
+					name string
+				}
+			}
+		} `graphql:"refs(prefix: \"refs/tags/\", last: 1, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, before: $before), query: $prefix"`
+	} `graphql:"repository(owner: $owner, name: $name)"`
+}
+
+func fetch(stream *db.Stream) {
+	s, remain := util.SplitOnce(stream.Fetch, ' ')
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		panic(err)
+	}
+	// TODO: support other GHFetchType
+	switch GHFetchType(i) {
+	case TAG:
+		ql_tag(stream, remain)
+	}
+	stream.LastChk = time.Now()
+}
+
+func ql_tag(stream *db.Stream, remain string) {
+	prefix, remain := util.SplitOnce(remain, ' ')
+	owner, name := util.SplitOnce(remain, '/')
+	var q TagQL
+	if err := qlcli.Query(context.Background(), &q, map[string]any{
+		"prefix": prefix,
+		"before": nil,
+		"owner":  owner,
+		"name":   name,
+	}); err != nil {
+		log.Printf("github: ql_tag: %v", err)
+		return
+	}
+	if v := strings.TrimPrefix(q.Repository.Refs.edges[0].node.name, prefix); v != stream.Ver {
+		stream.Ver = v
+		stream.LastUpd = time.Now()
 	}
 }

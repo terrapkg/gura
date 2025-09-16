@@ -5,6 +5,7 @@ go 1.24.6
 require (
 	github.com/gin-gonic/gin v1.10.1
 	github.com/google/uuid v1.6.0
+	github.com/hasura/go-graphql-client v0.14.4
 	github.com/joho/godotenv v1.5.1
 	github.com/klauspost/compress v1.18.0
 	gorm.io/datatypes v1.2.6
@@ -18,6 +19,7 @@ require (
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
 	github.com/cloudwego/iasm v0.2.0 // indirect
+	github.com/coder/websocket v1.8.13 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect

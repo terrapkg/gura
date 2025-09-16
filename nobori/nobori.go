@@ -39,6 +39,7 @@ func schedule(stream db.Stream) {
 }
 
 func FetchLoop() {
+	go swimGitHub()
 	var streams []db.Stream
 	if r := db.DB.Find(&streams); r.Error != nil {
 		log.Fatalln("nobori: fatal:", r.Error)
@@ -48,8 +49,8 @@ func FetchLoop() {
 	}
 	for {
 		switch stream := <-queue; stream.Forge {
-			case db.GitHub:
-				go fetchGitHub(stream)
+		case db.GitHub:
+			go fetchGitHub(stream)
 		}
 	}
 }
