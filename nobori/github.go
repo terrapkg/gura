@@ -19,24 +19,29 @@ import (
 
 // ? https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
 // no more than 100 parallel requests
-var pool = make(chan db.Stream, 100)
+var pool_rest = make(chan db.Stream)
+var pool_ql = make(chan db.Stream)
 var tokens []Token
-var ql_current_token *Token
-var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
-	func(r *http.Request) {
-		r.Header.Add("Authorization", "Bearer"+ql_current_token.key)
-	})
+var tokensql []Token
 
 type Token struct {
 	key   string
 	quota int16
 	reset time.Time
-	qlquo int16
-	qlrst time.Time
 }
 
 func fetchGitHub(stream db.Stream) {
-	pool <- stream
+	t, _ := util.SplitOnce(stream.Fetch, ' ')
+	i, err := strconv.Atoi(t)
+	if err != nil {
+		log.Fatalf("github: bad fetch [%s]: %v", stream.Fetch, err)
+	}
+	switch GHFetchType(i) {
+	case TAG, QL:
+		pool_ql <- stream
+	case RELEASE:
+		pool_rest <- stream
+	}
 }
 
 func fillGitHubTokens() *Token {
@@ -93,25 +98,72 @@ func fillGitHubTokens() *Token {
 	if len(tokens) == 0 {
 		log.Fatalln("github: fatal: no tokens")
 	}
-	ql_current_token = &tokens[0]
 	return &tokens[0]
+}
+func fillGitHubTokensQL() *Token {
+	token_chan := make(chan Token)
+	num := 0
+	for token := range strings.SplitSeq(os.Getenv("GURA_GITHUB_TOKENS"), ";") {
+		num++
+		go func(token string) {
+			var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
+				func(r *http.Request) {
+					r.Header.Add("Authorization", "Bearer "+token)
+				})
+			var q struct {
+				RateLimit struct {
+					remaining int16
+					resetAt   string
+				}
+			}
+			if err := qlcli.Query(context.Background(), &q, nil); err != nil {
+				log.Fatalln("github: can't query RateLimit for token", token)
+			}
+			reset, err := time.Parse(time.RFC3339, q.RateLimit.resetAt)
+			if err != nil {
+				log.Fatalln("github: cannot parse time:", q.RateLimit.resetAt)
+			}
+			token_chan <- Token{
+				key:   token,
+				quota: q.RateLimit.remaining,
+				reset: reset,
+			}
+		}(token)
+	}
+	for ; num != 0; num-- {
+		tokensql = append(tokensql, <-token_chan)
+	}
+	slices.SortFunc(tokensql, func(a, b Token) int {
+		if a.quota == 0 && b.quota == 0 {
+			return a.reset.Compare(b.reset)
+		}
+		if a.quota < b.quota {
+			return -1
+		}
+		if a.quota == b.quota {
+			return 0
+		}
+		return +1
+	})
+	if len(tokens) == 0 {
+		log.Fatalln("github: fatal: no tokens")
+	}
+	return &tokensql[0]
 }
 
 func noMoreFish(token Token) bool {
 	return token.quota == 0
 }
-func thanksForAllTheFish(token *Token, token_idx *int) {
-	*token_idx = (*token_idx + 1) % len(tokens)
-	*token = tokens[*token_idx]
-	ql_current_token = token
+func thanksForAllTheFish(token *Token, token_idx *int, tokens *[]Token) {
+	*token_idx = (*token_idx + 1) % len(*tokens)
+	*token = (*tokens)[*token_idx]
 }
 func waitForFish(token Token) {
 	if token.quota == 0 {
 		time.Sleep(time.Until(token.reset))
 	}
 }
-
-func quota_reset_from_header(h http.Header) (quota int16, reset time.Time) {
+func updToken(token *Token, h http.Header) {
 	q, err := strconv.ParseInt(h.Get("x-ratelimit-remaining"), 10, 16)
 	if err != nil {
 		log.Fatalf("github: strconv x-ratelimit-remaining: %v", err)
@@ -122,26 +174,39 @@ func quota_reset_from_header(h http.Header) (quota int16, reset time.Time) {
 		log.Fatalf("github: strconv x-ratelimit-reset: %v", err)
 		return
 	}
-	quota = int16(q)
-	reset = time.Unix(r, 0)
-	return
-}
-func updToken(token *Token, h http.Header) {
-	token.quota, token.reset = quota_reset_from_header(h)
-}
-func updTokenQL(token *Token, h http.Header) {
-	token.qlquo, token.qlrst = quota_reset_from_header(h)
+	token.quota = int16(q)
+	token.reset = time.Unix(r, 0)
 }
 
 // the shark shall initialise the funny
 func swimGitHub() {
-	token_idx := 0
-	for token := fillGitHubTokens(); noMoreFish(*token); thanksForAllTheFish(token, &token_idx) {
+	go swimGitHubRest()
+	go swimGitHubQL()
+}
+func swimGitHubRest() {
+	for i, token := 0, fillGitHubTokens(); noMoreFish(*token); thanksForAllTheFish(token, &i, &tokens) {
 		waitForFish(*token)
 		for {
-			stream := <-pool
+			stream := <-pool_rest
 			go func(stream db.Stream) {
-				fetch(&stream, token)
+				fetch(&stream, token, nil)
+				go schedule(stream)
+				db.DB.Save(stream)
+			}(stream)
+		}
+	}
+}
+func swimGitHubQL() {
+	for i, token := 0, fillGitHubTokensQL(); noMoreFish(*token); thanksForAllTheFish(token, &i, &tokensql) {
+		waitForFish(*token)
+		qlcli := ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
+			func(r *http.Request) {
+				r.Header.Add("Authorization", "Bearer "+token.key)
+			})
+		for {
+			stream := <-pool_ql
+			go func(stream db.Stream) {
+				fetch(&stream, token, qlcli)
 				go schedule(stream)
 				db.DB.Save(stream)
 			}(stream)
@@ -191,23 +256,24 @@ const (
 	QL
 )
 
-func fetch(stream *db.Stream, token *Token) {
+func fetch(stream *db.Stream, token *Token, qlcli *ql.Client) {
 	s, remain := util.SplitOnce(stream.Fetch, ' ')
 	i, err := strconv.Atoi(s)
 	if err != nil {
 		panic(err)
 	}
-	// TODO: support other GHFetchType
 	switch GHFetchType(i) {
 	case TAG:
-		ql_tag(stream, remain)
+		ql_tag(stream, remain, token, *qlcli)
 	case RELEASE:
 		rest_release(stream, remain, token)
+	case QL:
+		panic("todo") // TODO: ql fetch mode
 	}
 	stream.LastChk = time.Now()
 }
 
-func ql_tag(stream *db.Stream, remain string) {
+func ql_tag(stream *db.Stream, remain string, token *Token, qlcli ql.Client) {
 	prefix, remain := util.SplitOnce(remain, ' ')
 	owner, name := util.SplitOnce(remain, '/')
 	// ? https://stackoverflow.com/questions/19452244/github-api-v3-order-tags-by-creation-date
@@ -235,5 +301,5 @@ func ql_tag(stream *db.Stream, remain string) {
 		stream.Ver = v
 		stream.LastUpd = time.Now()
 	}
-	updTokenQL(ql_current_token, headers)
+	updToken(token, headers)
 }
