@@ -32,7 +32,7 @@ type Token struct {
 
 func fetchGitHub(stream db.Stream) {
 	t, _ := util.SplitOnce(stream.Fetch, ' ')
-	i, err := strconv.Atoi(t)
+	i, err := strconv.ParseUint(t, 10, 8)
 	if err != nil {
 		log.Fatalf("github: bad fetch [%s]: %v", stream.Fetch, err)
 	}
@@ -248,7 +248,7 @@ func rest_release(stream *db.Stream, remain string, token *Token) {
 	log.Printf("github: [%s]: can't find prefix", stream.Fetch)
 }
 
-type GHFetchType = int8
+type GHFetchType = uint8
 
 const (
 	TAG GHFetchType = iota
@@ -258,7 +258,7 @@ const (
 
 func fetch(stream *db.Stream, token *Token, qlcli *ql.Client) {
 	s, remain := util.SplitOnce(stream.Fetch, ' ')
-	i, err := strconv.Atoi(s)
+	i, err := strconv.ParseUint(s, 10, 8)
 	if err != nil {
 		panic(err)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/util"
 )
 
 type RepoPatch struct {
@@ -28,9 +29,9 @@ func repoPackageRouteGroup(group *gin.RouterGroup) {
 }
 
 func listPkgsByRepo(c *gin.Context) {
-	repoID := c.Param("repo")
+	repoID := util.SanitizeWhite(c.Param("repo"))
 
-	fmt.Println("repoID:", repoID) // Debug print
+	log.Println("repoID:", repoID) // Debug print
 	var pkgs []db.Pkg
 	if err := db.DB.Where("repo_id = ?", repoID).Find(&pkgs).Error; err != nil {
 		log.Println("listPkgsByRepo: err:", err)
@@ -41,7 +42,7 @@ func listPkgsByRepo(c *gin.Context) {
 }
 
 func deleteRepo(c *gin.Context) {
-	repoID := c.Param("repo")
+	repoID := util.SanitizeWhite(c.Param("repo"))
 	repo, err := db.RepoFetch(repoID)
 	if err != nil {
 		log.Println("deleteRepo: err:", err)
@@ -66,7 +67,7 @@ func deleteRepo(c *gin.Context) {
 }
 
 func fetchRepo(c *gin.Context) {
-	repoID := c.Param("repo")
+	repoID := util.SanitizeWhite(c.Param("repo"))
 	repo, err := db.RepoFetch(repoID)
 	if err != nil {
 		log.Println("fetchRepo: err:", err)
@@ -82,8 +83,8 @@ func fetchRepo(c *gin.Context) {
 
 // Create a new repo if doesn't exist yet
 func createRepo(c *gin.Context) {
-	repoID := c.Param("repo")
-	repoType := c.Query("type")
+	repoID := util.SanitizeWhite(c.Param("repo"))
+	repoType := util.SanitizeWhite(c.Query("type"))
 	if repoType == "" {
 		// Default to rpm for now
 		repoType = "rpm"
@@ -132,7 +133,7 @@ func createRepo(c *gin.Context) {
 }
 
 func updateRepo(c *gin.Context) {
-	repoID := c.Param("repo")
+	repoID := util.SanitizeWhite(c.Param("repo"))
 
 	// Fetch existing repo first
 	existingRepo, err := db.RepoFetch(repoID)
