@@ -2,6 +2,8 @@ package nobori
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,7 +21,7 @@ import (
 // no more than 100 parallel requests
 var pool = make(chan db.Stream, 100)
 var tokens []Token
-var ql_current_token Token
+var ql_current_token *Token
 var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
 	func(r *http.Request) {
 		r.Header.Add("Authorization", "Bearer"+ql_current_token.key)
@@ -37,7 +39,7 @@ func fetchGitHub(stream db.Stream) {
 	pool <- stream
 }
 
-func fillGitHubTokens() Token {
+func fillGitHubTokens() *Token {
 	token_chan := make(chan Token)
 	num := 0
 	for token := range strings.SplitSeq(os.Getenv("GURA_GITHUB_TOKENS"), ";") {
@@ -91,7 +93,8 @@ func fillGitHubTokens() Token {
 	if len(tokens) == 0 {
 		log.Fatalln("github: fatal: no tokens")
 	}
-	return tokens[0]
+	ql_current_token = &tokens[0]
+	return &tokens[0]
 }
 
 func noMoreFish(token Token) bool {
@@ -100,6 +103,7 @@ func noMoreFish(token Token) bool {
 func thanksForAllTheFish(token *Token, token_idx *int) {
 	*token_idx = (*token_idx + 1) % len(tokens)
 	*token = tokens[*token_idx]
+	ql_current_token = token
 }
 func waitForFish(token Token) {
 	if token.quota == 0 {
@@ -107,30 +111,37 @@ func waitForFish(token Token) {
 	}
 }
 
-func updToken(token *Token, resp *http.Response) {
-	quota, err := strconv.ParseInt(resp.Header.Get("x-ratelimit-remaining"), 10, 16)
+func quota_reset_from_header(h http.Header) (quota int16, reset time.Time) {
+	q, err := strconv.ParseInt(h.Get("x-ratelimit-remaining"), 10, 16)
 	if err != nil {
 		log.Fatalf("github: strconv x-ratelimit-remaining: %v", err)
 		return
 	}
-	reset, err := strconv.ParseInt(resp.Header.Get("x-ratelimit-reset"), 10, 64)
+	r, err := strconv.ParseInt(h.Get("x-ratelimit-reset"), 10, 64)
 	if err != nil {
 		log.Fatalf("github: strconv x-ratelimit-reset: %v", err)
 		return
 	}
-	token.quota = int16(quota)
-	token.reset = time.Unix(reset, 0)
+	quota = int16(q)
+	reset = time.Unix(r, 0)
+	return
+}
+func updToken(token *Token, h http.Header) {
+	token.quota, token.reset = quota_reset_from_header(h)
+}
+func updTokenQL(token *Token, h http.Header) {
+	token.qlquo, token.qlrst = quota_reset_from_header(h)
 }
 
 // the shark shall initialise the funny
 func swimGitHub() {
 	token_idx := 0
-	for token := fillGitHubTokens(); noMoreFish(token); thanksForAllTheFish(&token, &token_idx) {
-		waitForFish(token)
+	for token := fillGitHubTokens(); noMoreFish(*token); thanksForAllTheFish(token, &token_idx) {
+		waitForFish(*token)
 		for {
 			stream := <-pool
 			go func(stream db.Stream) {
-				fetch(&stream)
+				fetch(&stream, token)
 				go schedule(stream)
 				db.DB.Save(stream)
 			}(stream)
@@ -138,33 +149,39 @@ func swimGitHub() {
 	}
 }
 
-/*
-func rest_tag(stream *db.Stream) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+stream.Fetch+"/tags", nil)
+func rest_release(stream *db.Stream, remain string, token *Token) {
+	prefix, remain := util.SplitOnce(remain, ' ')
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+remain+"/releases", nil)
 	if err != nil {
 		log.Printf("github: req [%s]: %v", stream.Fetch, err)
-		continue
+		return
 	}
 	req.Header.Add("Authorization", "Bearer "+token.key)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("github: resp [%s]: %v", stream.Fetch, err)
-		continue
+		return
 	}
-	updToken(&token, resp)
+	updToken(token, resp.Header)
 	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatalln("github: can't read buf")
 	}
 	var v []struct {
-		name string
+		tag_name string
 	}
 	json.Unmarshal(buf, &v)
-	if stream.Ver != v[0].name {
-		stream.Ver = v[0].name
-		stream.LastUpd = time.Now()
+	for _, v := range v {
+		if v, ok := strings.CutPrefix(v.tag_name, prefix); ok {
+			if stream.Ver != v {
+				stream.Ver = v
+				stream.LastUpd = time.Now()
+			}
+			return
+		}
 	}
-}*/
+	log.Printf("github: [%s]: can't find prefix", stream.Fetch)
+}
 
 type GHFetchType = int8
 
@@ -174,20 +191,7 @@ const (
 	QL
 )
 
-// ? https://stackoverflow.com/questions/19452244/github-api-v3-order-tags-by-creation-date
-type TagQL struct {
-	Repository struct {
-		Refs struct {
-			edges []struct {
-				node struct {
-					name string
-				}
-			}
-		} `graphql:"refs(prefix: \"refs/tags/\", last: 1, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, before: $before), query: $prefix"`
-	} `graphql:"repository(owner: $owner, name: $name)"`
-}
-
-func fetch(stream *db.Stream) {
+func fetch(stream *db.Stream, token *Token) {
 	s, remain := util.SplitOnce(stream.Fetch, ' ')
 	i, err := strconv.Atoi(s)
 	if err != nil {
@@ -197,6 +201,8 @@ func fetch(stream *db.Stream) {
 	switch GHFetchType(i) {
 	case TAG:
 		ql_tag(stream, remain)
+	case RELEASE:
+		rest_release(stream, remain, token)
 	}
 	stream.LastChk = time.Now()
 }
@@ -204,13 +210,24 @@ func fetch(stream *db.Stream) {
 func ql_tag(stream *db.Stream, remain string) {
 	prefix, remain := util.SplitOnce(remain, ' ')
 	owner, name := util.SplitOnce(remain, '/')
-	var q TagQL
+	// ? https://stackoverflow.com/questions/19452244/github-api-v3-order-tags-by-creation-date
+	var q struct {
+		Repository struct {
+			Refs struct {
+				edges []struct {
+					node struct {
+						name string
+					}
+				}
+			} `graphql:"refs(prefix: \"refs/tags/\", last: 1, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}), query: $prefix"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	var headers http.Header
 	if err := qlcli.Query(context.Background(), &q, map[string]any{
 		"prefix": prefix,
-		"before": nil,
 		"owner":  owner,
 		"name":   name,
-	}); err != nil {
+	}, ql.BindResponseHeaders(&headers)); err != nil {
 		log.Printf("github: ql_tag: %v", err)
 		return
 	}
@@ -218,4 +235,5 @@ func ql_tag(stream *db.Stream, remain string) {
 		stream.Ver = v
 		stream.LastUpd = time.Now()
 	}
+	updTokenQL(ql_current_token, headers)
 }
