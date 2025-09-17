@@ -6,12 +6,15 @@
 package nobori
 
 import (
-	"log"
 	"math"
 	"time"
 
 	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 )
+
+var l = util.SetupLog("nobori")
 
 var queue chan db.Stream = make(chan db.Stream)
 
@@ -34,16 +37,17 @@ func calcTimeout(lastChk time.Time) time.Duration {
 }
 
 func schedule(stream db.Stream) {
-	time.Sleep(time.Until(stream.LastChk.Add(calcTimeout(stream.LastChk))))
+	t := stream.LastChk.Add(calcTimeout(stream.LastChk))
+	l.Debug("sched", zap.String("stream", stream.ID.String()), zap.Time("until", t))
+	time.Sleep(time.Until(t))
 	queue <- stream
 }
 
 func FetchLoop() {
 	go swimGitHub()
 	var streams []db.Stream
-	if r := db.DB.Find(&streams); r.Error != nil {
-		log.Fatalln("nobori: fatal:", r.Error)
-	}
+	r := db.DB.Find(&streams)
+	util.Yeet(l, "can't find streams", r.Error)
 	for _, stream := range streams {
 		go schedule(stream)
 	}

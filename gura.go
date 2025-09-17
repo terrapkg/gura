@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -9,15 +8,16 @@ import (
 	"github.com/terrapkg/gura/db"
 	"github.com/terrapkg/gura/kudari"
 	"github.com/terrapkg/gura/nobori"
+	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 )
 
 var ver = "version is not set!"
+var l = util.SetupLog("gura")
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatalln("cannot load .env", err)
-	}
+	zap.ReplaceGlobals(l)
+	util.MaybeSuicide(l, "cannot load .env", godotenv.Load())
 
 	router_opts := api.RouterSetupOpts{
 		Version: ver,

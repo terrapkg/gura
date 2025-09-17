@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"moul.io/zapgorm2"
 )
 
 // RepoType represents repository type enum.
@@ -85,13 +88,11 @@ func SetupDB() {
 		log.Fatalln("GURA_DSN environment variable is not set")
 	}
 
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatalln("cannot open db: ", err)
-	}
+	logger := zapgorm2.New(util.SetupLog("gorm"))
+	logger.SetAsDefault() // optional: configure gorm to use this zapgorm.Logger for callbacks
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger})
+	util.MaybeSuicide(logger, "cannot open db", err)
 
 	// AutoMigrate in an order that respects foreign keys.
-	if err := DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}, &Stream{}); err != nil {
-		log.Fatalln("auto migrate failed: ", err)
-	}
+	util.MaybeSuicide(logger, "auto migrate failed", DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}, &Stream{}))
 }
