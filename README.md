@@ -2,6 +2,8 @@
 
 ## License
 
+`AGPL-3.0-or-later`
+
   Copyright (c) 2024-2025 Fyra Labs
 
   This program is free software: you can redistribute it and/or modify
@@ -18,12 +20,8 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## Building
-Please set `-ldflags '-X main.ver=1.2.3` (insert the correct version)
+Please set `-ldflags '-X main.ver=1.2.3'` (insert the correct version)
 
-## Running
+## Configurations
 
-```
-export DSN="host=localhost user=postgres password=postgres dbname=gura port=5432 sslmode=disable"
-export GURA_LISTEN_ADDRESS=":8080"
-./gura
-```
+See `.env.example` to create your own `.env` file.
