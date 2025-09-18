@@ -78,6 +78,7 @@ type Repo struct {
 }
 
 var DB *gorm.DB
+var l = util.SetupLog("db")
 
 // SetupDB initializes the global DB connection and runs migrations.
 func SetupDB() {
@@ -90,8 +91,8 @@ func SetupDB() {
 	logger := zapgorm2.New(util.SetupLog("gorm"))
 	logger.SetAsDefault() // optional: configure gorm to use this zapgorm.Logger for callbacks
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger})
-	util.MaybeSuicide(logger, "cannot open db", err)
+	util.MaybeSuicide(l, "cannot open db", err)
 
 	// AutoMigrate in an order that respects foreign keys.
-	util.MaybeSuicide(logger, "auto migrate failed", DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}, &Stream{}))
+	util.MaybeSuicide(l, "auto migrate failed", DB.AutoMigrate(&Repo{}, &Pkg{}, &PkgMeta{}, &Stream{}))
 }
