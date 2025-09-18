@@ -2,11 +2,11 @@ package api
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terrapkg/gura/db"
 	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 )
 
 type RepoPatch struct {
@@ -31,11 +31,10 @@ func repoPackageRouteGroup(group *gin.RouterGroup) {
 func listPkgsByRepo(c *gin.Context) {
 	repoID := util.SanitizeWhite(c.Param("repo"))
 
-	log.Println("repoID:", repoID) // Debug print
+	log.Debug("", zap.String("repoID", repoID)) // Debug print
 	var pkgs []db.Pkg
-	if err := db.DB.Where("repo_id = ?", repoID).Find(&pkgs).Error; err != nil {
-		log.Println("listPkgsByRepo: err:", err)
-		JSONError(c, 500, err.Error())
+	if util.Yeet(log, "listPkgsByRepo: can't ls pkgs", db.DB.Where("repo_id = ?", repoID).Find(&pkgs).Error, zap.String("repoID", repoID)) {
+		JSONError(c, 500, "DB error")
 		return
 	}
 	c.JSON(200, pkgs)
@@ -44,8 +43,7 @@ func listPkgsByRepo(c *gin.Context) {
 func deleteRepo(c *gin.Context) {
 	repoID := util.SanitizeWhite(c.Param("repo"))
 	repo, err := db.RepoFetch(repoID)
-	if err != nil {
-		log.Println("deleteRepo: err:", err)
+	if util.Yeet(log, "deleteRepo: can't find repo", err, zap.String("repoID", repoID)) {
 		JSONError(c, 500, err.Error())
 		return
 	}
@@ -58,8 +56,7 @@ func deleteRepo(c *gin.Context) {
 	// Note: This does not delete associated packages.
 	// todo: implement cascading delete in db/repos.go
 
-	if err := repo.Delete(); err != nil {
-		log.Println("deleteRepo: delete err:", err)
+	if util.Yeet(log, "deleteRepo: can't del", repo.Delete(), zap.String("repoID", repoID)) {
 		JSONError(c, 500, err.Error())
 		return
 	}
@@ -69,8 +66,7 @@ func deleteRepo(c *gin.Context) {
 func fetchRepo(c *gin.Context) {
 	repoID := util.SanitizeWhite(c.Param("repo"))
 	repo, err := db.RepoFetch(repoID)
-	if err != nil {
-		log.Println("fetchRepo: err:", err)
+	if util.Yeet(log, "fetchRepo: can't find repo", err, zap.String("repoID", repoID)) {
 		JSONError(c, 500, err.Error())
 		return
 	}
@@ -97,10 +93,8 @@ func createRepo(c *gin.Context) {
 
 	// Check if repo already exists
 	existingRepo, err := db.RepoFetch(repoID)
-	if err != nil {
-		// Real DB error
-		log.Println("createRepo: err:", err)
-		JSONError(c, 500, err.Error())
+	if util.Yeet(log, "createRepo: db err", err, zap.String("repoID", repoID)) {
+		JSONError(c, 500, "DB error")
 		return
 	}
 	if existingRepo != nil {
@@ -110,7 +104,7 @@ func createRepo(c *gin.Context) {
 	}
 
 	// Repo does not exist, create it
-	log.Printf("Creating new repo: ID=%s, Type=%s\n", repoID, repoType)
+	log.Info("Creating new repo", zap.String("id", repoID), zap.String("type", repoType))
 
 	// convert repoType string to db.RepoType
 	// Currently only "rpm" is supported
@@ -123,9 +117,8 @@ func createRepo(c *gin.Context) {
 		return
 	}
 	res, err := db.RepoCreate(repoID, rType)
-	if err != nil {
-		log.Printf("createRepo: %v", err)
-		JSONError(c, 500, err.Error())
+	if util.Yeet(log, "createRepo: db err", err, zap.String("id", repoID)) {
+		JSONError(c, 500, "DB error")
 		return
 	}
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/terrapkg/gura/util"
-	"go.uber.org/zap"
 	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

@@ -6,15 +6,18 @@
 package api
 
 import (
-	"log"
+	"time"
 
+	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
+	"github.com/terrapkg/gura/util"
 )
 
-func JSONError(c *gin.Context, code int, msg string) {
-    c.JSON(code, gin.H{"error": msg})
-}
+var log = util.SetupLog("api")
 
+func JSONError(c *gin.Context, code int, msg string) {
+	c.JSON(code, gin.H{"error": msg})
+}
 
 // Holds options for routing settings,
 // right now only contains version string,
@@ -30,9 +33,11 @@ func getHealth(version string) gin.HandlerFunc {
 }
 
 func SetupRouter(opts RouterSetupOpts) *gin.Engine {
-	log.Println("Initializing API service")
+	log.Info("Initializing API service")
 
 	router := gin.Default()
+	router.Use(ginzap.Ginzap(log, time.RFC3339, true))
+	router.Use(ginzap.RecoveryWithZap(log, true))
 
 	router.GET("/health", getHealth(opts.Version))
 
