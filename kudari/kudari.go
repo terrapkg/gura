@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/terrapkg/gura/db"
+	"github.com/terrapkg/gura/util"
 	"gorm.io/gorm"
 )
+
+var l = util.SetupLog("kudari")
 
 // const fetchRepoTimer = 3e11 // 5min
 const fetchRepoTimer = 3e10 // 30s

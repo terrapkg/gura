@@ -13,6 +13,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/terrapkg/gura/db"
 	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 )
 
 type Repomd struct {
@@ -46,6 +47,34 @@ type PackageXML struct {
 		Ver   string `xml:"ver,attr"`
 		Rel   string `xml:"rel,attr"`
 	} `xml:"version"`
+	Checksum Checksum `xml:"checksum"`
+	Packager string   `xml:"packager"`
+	Url      string   `xml:"url"`
+	// time
+	// size
+	// location
+	Format struct {
+		License     *string    `xml:"license,omitempty"`
+		Vendor      *string    `xml:"vendor,omitempty"`
+		Group       *string    `xml:"group,omitempty"`
+		Buildhost   *string    `xml:"buildhost,omitempty"`
+		Sourcerpm   *string    `xml:"sourcerpm,omitempty"`
+		Provides    []RPMEntry `xml:"provides>entry,omitempty"`
+		Requires    []RPMEntry `xml:"requires>entry,omitempty"`
+		Obsoletes   []RPMEntry `xml:"obsoletes>entry,omitempty"`
+		Conflicts   []RPMEntry `xml:"conflicts>entry,omitempty"`
+		Enhances    []RPMEntry `xml:"enhances>entry,omitempty"`
+		Suggests    []RPMEntry `xml:"suggests>entry,omitempty"`
+		Recommends  []RPMEntry `xml:"recommends>entry,omitempty"`
+		Supplements []RPMEntry `xml:"supplements>entry,omitempty"`
+	} `xml:"format"`
+}
+type RPMEntry struct {
+	Name  string `xml:"name,attr"`
+	Flags string `xml:"flags,attr"`
+	Epoch string `xml:"epoch,attr"`
+	Ver   string `xml:"ver,attr"`
+	Rel   string `xml:"rel,attr"`
 }
 
 type PrimaryXML struct {
@@ -55,25 +84,23 @@ type PrimaryXML struct {
 // Obtain [Repomd] from a repository
 func getRepomd(repoID, fetch string) *Repomd {
 	resp, err := http.Get(fmt.Sprintf("%s/repodata/repomd.xml", fetch))
-	if err != nil {
-		log.Printf("[%s] Failed to fetch repomd.xml: %v", repoID, err)
+	if util.Yeet(l, "Failed to fetch repomd.xml", err, zap.String("repoID", repoID)) {
 		return nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[%s] HTTP error repomd: %d", repoID, resp.StatusCode)
+		l.Error("repomd HTTP error", zap.String("repoID", repoID), zap.Int("status code", resp.StatusCode))
 		return nil
 	}
-	log.Printf("[%s] decoding repomd.xml", repoID)
+	l.Info("decoding repomd.xml", zap.String("repoID", repoID))
 
 	decoder := xml.NewDecoder(resp.Body)
 	var repomd Repomd
-	if err := decoder.Decode(&repomd); err != nil {
-		log.Printf("[%s] Failed to parse repomd.xml: %v", repoID, err)
+	if util.Yeet(l, "Failed to parse repomd.xml", decoder.Decode(&repomd)) {
 		return nil
 	}
-	log.Printf("[%s] repomd.xml decoded successfully", repoID)
+	l.Info("repomd.xml decoded successfully", zap.String("repoID", repoID))
 	return &repomd
 }
 
@@ -89,33 +116,26 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 			case strings.HasSuffix(href, ".xml.zst"):
 				primaryLocation = href
 				compression = "zst"
-			// case strings.HasSuffix(href, ".xml.zck"):
-			// 	primaryLocation = href
-			// 	compression = "zck"
 			case strings.HasSuffix(href, ".xml.gz"):
 				primaryLocation = href
 				compression = "gz"
 			default:
-				log.Printf("[%s] Unsupported compression type for primary.xml: %s", repoID, href)
+				l.Error("Unsupported compression type for primary.xml", zap.String("repoID", repoID), zap.String("href", href))
+				return
 			}
 		}
 	}
-	if primaryLocation == "" {
-		log.Printf("[%s] No 'primary' data found in repomd.xml", repoID)
-		return
-	}
 
 	primaryURL := fmt.Sprintf("%s/%s", fetch, primaryLocation)
-	log.Printf("[%s] fetching primary.xml.%s", repoID, compression)
+	l.Info("fetching primary.xml", zap.String("repoID", repoID), zap.String("compression", compression))
 	resp, err := http.Get(primaryURL)
-	if err != nil {
-		log.Printf("[%s] Failed to fetch primary.xml.%s: %v", repoID, compression, err)
+	if util.Yeet(l, "Failed to fetch primary.xml", err, zap.String("repoID", repoID), zap.String("compression", compression)) {
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[%s] HTTP error fetching primary.xml.%s: %d", repoID, compression, resp.StatusCode)
+		l.Error("HTTP error fetching primary.xml", zap.String("repoID", repoID), zap.String("compression", compression), zap.Int("statusCode", resp.StatusCode))
 		return
 	}
 
@@ -123,33 +143,30 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	switch compression {
 	case "gz":
 		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			log.Printf("[%s] Failed to create gzip reader: %v", repoID, err)
+		if util.Yeet(l, "Failed to create gzip reader", err, zap.String("repoID", repoID), zap.String("compression", compression)) {
 			return
 		}
 		defer gzReader.Close()
 		xmlReader = gzReader
 	case "zst":
 		zstdDecoder, err := zstd.NewReader(resp.Body)
-		if err != nil {
-			log.Printf("[%s] Failed to create zstd reader: %v", repoID, err)
+		if util.Yeet(l, "Failed to create zstd reader", err, zap.String("repoID", repoID), zap.String("compression", compression)) {
 			return
 		}
 		defer zstdDecoder.Close()
 		xmlReader = zstdDecoder
 	default:
-		log.Printf("[%s] Unknown compression type for primary.xml: %s", repoID, compression)
+		l.Panic("Unknown compression type for primary.xml", zap.String("repoID", repoID), zap.String("compression", compression))
 		return
 	}
 
 	decoder := xml.NewDecoder(xmlReader)
 	primary = &PrimaryXML{}
-	if err := decoder.Decode(primary); err != nil {
-		log.Printf("[%s] Failed to parse primary.xml: %v", repoID, err)
+	if util.Yeet(l, "Failed to parse primary.xml", decoder.Decode(primary), zap.String("repoID", repoID), zap.String("compression", compression)) {
 		return
 	}
 
-	log.Printf("[%s] primary.xml decoded successfully", repoID)
+	l.Info("primary.xml decoded successfully", zap.String("repoID", repoID))
 	return
 }
 
@@ -180,8 +197,7 @@ func rpmFetch(repo db.Repo) {
 		go eachFetch(repo, fetch, ch)
 	}
 	var pkgs []db.Pkg
-	if err := db.DB.Where("repo_id = ? AND deleted_at IS NULL", repo.ID).Order("name, arch").Find(&pkgs).Error; err != nil {
-		log.Printf("[%s] Failed to list packages: %v", repo.ID, err)
+	if util.Yeet(l, "Failed to list packages", db.DB.Where("repo_id = ? AND deleted_at IS NULL", repo.ID).Order("name, arch").Find(&pkgs).Error) {
 		return
 	}
 	allSlices := [][]PackageXML{}
