@@ -3,9 +3,10 @@ package kudari
 
 import (
 	"compress/gzip"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"log"
+
 	"net/http"
 	"strings"
 
@@ -16,30 +17,30 @@ import (
 	"go.uber.org/zap"
 )
 
-type Repomd struct {
+type RPMRepomd struct {
 	XMLName  xml.Name `xml:"repomd"`
 	Revision string   `xml:"revision"`
 	Data     []struct {
-		Type            string    `xml:"type,attr"`
-		Checksum        Checksum  `xml:"checksum"`
-		OpenChecksum    *Checksum `xml:"open-checksum,omitempty"`
-		HeaderChecksum  *Checksum `xml:"header-checksum,omitempty"`
-		Timestamp       int64     `xml:"timestamp"`
-		Size            int64     `xml:"size"`
-		OpenSize        *int64    `xml:"open-size,omitempty"`
-		HeaderSize      *int64    `xml:"header-size,omitempty"`
-		DatabaseVersion *int      `xml:"database_version,omitempty"`
+		Type            string       `xml:"type,attr"`
+		Checksum        RPMChecksum  `xml:"checksum"`
+		OpenChecksum    *RPMChecksum `xml:"open-checksum,omitempty"`
+		HeaderChecksum  *RPMChecksum `xml:"header-checksum,omitempty"`
+		Timestamp       int64        `xml:"timestamp"`
+		Size            int64        `xml:"size"`
+		OpenSize        *int64       `xml:"open-size,omitempty"`
+		HeaderSize      *int64       `xml:"header-size,omitempty"`
+		DatabaseVersion *int         `xml:"database_version,omitempty"`
 		Location        struct {
 			Href string `xml:"href,attr"`
 		} `xml:"location"`
 	} `xml:"data"`
 }
-type Checksum struct {
+type RPMChecksum struct {
 	Type  string `xml:"type,attr"`
 	Value string `xml:"chardata"`
 }
 
-type PackageXML struct {
+type RPMPackageXML struct {
 	Name    string `xml:"name"`
 	Arch    string `xml:"arch"`
 	Version struct {
@@ -47,27 +48,28 @@ type PackageXML struct {
 		Ver   string `xml:"ver,attr"`
 		Rel   string `xml:"rel,attr"`
 	} `xml:"version"`
-	Checksum Checksum `xml:"checksum"`
-	Packager string   `xml:"packager"`
-	Url      string   `xml:"url"`
+	Checksum RPMChecksum `xml:"checksum"`
+	Packager string      `xml:"packager"`
+	Url      string      `xml:"url"`
 	// time
 	// size
 	// location
-	Format struct {
-		License     *string    `xml:"license,omitempty"`
-		Vendor      *string    `xml:"vendor,omitempty"`
-		Group       *string    `xml:"group,omitempty"`
-		Buildhost   *string    `xml:"buildhost,omitempty"`
-		Sourcerpm   *string    `xml:"sourcerpm,omitempty"`
-		Provides    []RPMEntry `xml:"provides>entry,omitempty"`
-		Requires    []RPMEntry `xml:"requires>entry,omitempty"`
-		Obsoletes   []RPMEntry `xml:"obsoletes>entry,omitempty"`
-		Conflicts   []RPMEntry `xml:"conflicts>entry,omitempty"`
-		Enhances    []RPMEntry `xml:"enhances>entry,omitempty"`
-		Suggests    []RPMEntry `xml:"suggests>entry,omitempty"`
-		Recommends  []RPMEntry `xml:"recommends>entry,omitempty"`
-		Supplements []RPMEntry `xml:"supplements>entry,omitempty"`
-	} `xml:"format"`
+	Format RPMFormat `xml:"format"`
+}
+type RPMFormat struct {
+	License     *string    `xml:"license,omitempty"`
+	Vendor      *string    `xml:"vendor,omitempty"`
+	Group       *string    `xml:"group,omitempty"`
+	Buildhost   *string    `xml:"buildhost,omitempty"`
+	Sourcerpm   *string    `xml:"sourcerpm,omitempty"`
+	Provides    []RPMEntry `xml:"provides>entry,omitempty"`
+	Requires    []RPMEntry `xml:"requires>entry,omitempty"`
+	Obsoletes   []RPMEntry `xml:"obsoletes>entry,omitempty"`
+	Conflicts   []RPMEntry `xml:"conflicts>entry,omitempty"`
+	Enhances    []RPMEntry `xml:"enhances>entry,omitempty"`
+	Suggests    []RPMEntry `xml:"suggests>entry,omitempty"`
+	Recommends  []RPMEntry `xml:"recommends>entry,omitempty"`
+	Supplements []RPMEntry `xml:"supplements>entry,omitempty"`
 }
 type RPMEntry struct {
 	Name  string `xml:"name,attr"`
@@ -77,12 +79,12 @@ type RPMEntry struct {
 	Rel   string `xml:"rel,attr"`
 }
 
-type PrimaryXML struct {
-	Packages []PackageXML `xml:"package"`
+type RPMPrimaryXML struct {
+	Packages []RPMPackageXML `xml:"package"`
 }
 
 // Obtain [Repomd] from a repository
-func getRepomd(repoID, fetch string) *Repomd {
+func rpmGetRepomd(repoID, fetch string) *RPMRepomd {
 	resp, err := http.Get(fmt.Sprintf("%s/repodata/repomd.xml", fetch))
 	if util.Yeet(l, "Failed to fetch repomd.xml", err, zap.String("repoID", repoID)) {
 		return nil
@@ -96,7 +98,7 @@ func getRepomd(repoID, fetch string) *Repomd {
 	l.Info("decoding repomd.xml", zap.String("repoID", repoID))
 
 	decoder := xml.NewDecoder(resp.Body)
-	var repomd Repomd
+	var repomd RPMRepomd
 	if util.Yeet(l, "Failed to parse repomd.xml", decoder.Decode(&repomd)) {
 		return nil
 	}
@@ -104,8 +106,8 @@ func getRepomd(repoID, fetch string) *Repomd {
 	return &repomd
 }
 
-// Obtain [PrimaryXML] from a repository
-func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
+// Obtain [RPMPrimaryXML] from a repository
+func rpmGetPrimary(repoID, fetch string, repomd RPMRepomd) (primary *RPMPrimaryXML) {
 	var primaryLocation string
 	var compression string
 
@@ -161,7 +163,7 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	}
 
 	decoder := xml.NewDecoder(xmlReader)
-	primary = &PrimaryXML{}
+	primary = &RPMPrimaryXML{}
 	if util.Yeet(l, "Failed to parse primary.xml", decoder.Decode(primary), zap.String("repoID", repoID), zap.String("compression", compression)) {
 		return
 	}
@@ -170,47 +172,47 @@ func getPrimary(repoID, fetch string, repomd Repomd) (primary *PrimaryXML) {
 	return
 }
 
-// Obtain a sorted list of [PackageXML] structs for each package in the primary.xml file.
+// Obtain a sorted list of [rpmPackageXML] structs for each package in the primary.xml file.
 //
-// Sorting is defined by [Compare].
-func eachFetch(repo db.Repo, fetch string, ch chan []PackageXML) {
-	repomd := getRepomd(repo.ID, fetch)
+// Sorting is defined by [rpmCompare].
+func rpmEachFetch(repo db.Repo, fetch string, ch chan []RPMPackageXML) {
+	repomd := rpmGetRepomd(repo.ID, fetch)
 	if repomd == nil {
 		close(ch)
 		return
 	}
-	primary := getPrimary(repo.ID, fetch, *repomd)
+	primary := rpmGetPrimary(repo.ID, fetch, *repomd)
 	if primary == nil {
 		close(ch)
 		return
 	}
-	util.InsertionSort(&primary.Packages, Compare) // ensure sorted, though usually already sorted
+	util.InsertionSort(&primary.Packages, rpmCompare) // ensure sorted, though usually already sorted
 	ch <- primary.Packages
 	close(ch)
 }
 
 func rpmFetch(repo db.Repo) {
-	chans := []chan []PackageXML{}
+	chans := []chan []RPMPackageXML{}
 	for fetch := range strings.SplitSeq(repo.Fetch, "\n") {
-		ch := make(chan []PackageXML, 1)
+		ch := make(chan []RPMPackageXML, 1)
 		chans = append(chans, ch)
-		go eachFetch(repo, fetch, ch)
+		go rpmEachFetch(repo, fetch, ch)
 	}
 	var pkgs []db.Pkg
 	if util.Yeet(l, "Failed to list packages", db.DB.Where("repo_id = ? AND deleted_at IS NULL", repo.ID).Order("name, arch").Find(&pkgs).Error) {
 		return
 	}
-	allSlices := [][]PackageXML{}
+	allSlices := [][]RPMPackageXML{}
 	for _, ch := range chans {
 		local_packages, ok := <-ch
 		if !ok {
-			log.Printf("[%s] stop, couldn't fetch primary", repo.ID)
+			l.Error("stop, couldn't fetch primary", zap.String("repoID", repo.ID))
 			return
 		}
 		allSlices = append(allSlices, local_packages)
 	}
-	packages := util.MergeSortedDedup(allSlices, Compare)
-	log.Printf("[%s] processing %d packages", repo.ID, len(packages))
+	packages := util.MergeSortedDedup(allSlices, rpmCompare)
+	l.Info("processing packages", zap.String("repoID", repo.ID), zap.Int("count", len(packages)))
 	var newpkgs []*db.Pkg
 	updated := 0
 	unchanged := 0
@@ -218,15 +220,15 @@ func rpmFetch(repo db.Repo) {
 	walked := make([]bool, len(pkgs))
 	tx := db.DB.Begin()
 	for _, p := range packages {
-		if util.SortedContSearch(pkgs, p, func(a db.Pkg, b PackageXML) int {
-			return Compare(PackageXML{
+		if util.SortedContSearch(pkgs, p, func(a db.Pkg, b RPMPackageXML) int {
+			return rpmCompare(RPMPackageXML{
 				Name: a.Name,
 				Arch: a.Arch,
 			}, b)
 		}, &lastIdx) {
 			n := lastIdx
 			lastIdx++ // next search should start from the next index
-			fullver := fullVer(p)
+			fullver := rpmFullVer(p)
 			walked[n] = true
 			if fullver == pkgs[n].FullVer {
 				unchanged++
@@ -234,15 +236,19 @@ func rpmFetch(repo db.Repo) {
 			}
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
+			meta, _ := rpm2MetaJSON(p)
+			pkgs[n].Meta = meta
 			tx.Save(&pkgs[n])
 			updated++
 		} else {
+			meta, _ := rpm2MetaJSON(p)
 			newpkgs = append(newpkgs, &db.Pkg{
 				Name:    p.Name,
-				FullVer: fullVer(p),
+				FullVer: rpmFullVer(p),
 				Ver:     p.Version.Ver,
 				Arch:    p.Arch,
 				RepoID:  repo.ID,
+				Meta:    meta,
 			})
 		}
 	}
@@ -257,16 +263,38 @@ func rpmFetch(repo db.Repo) {
 		tx.CreateInBatches(newpkgs, 5000)
 	}
 	tx.Commit()
-	log.Printf("[%s] unchanged=%d, updated=%d, added=%d, deleted=%d", repo.ID, unchanged, updated, len(newpkgs), len(deletes))
+	l.Info("package update summary",
+		zap.String("repoID", repo.ID),
+		zap.Int("unchanged", unchanged),
+		zap.Int("updated", updated),
+		zap.Int("added", len(newpkgs)),
+		zap.Int("deleted", len(deletes)),
+	)
 }
 
-func fullVer(p PackageXML) string {
+func rpmFullVer(p RPMPackageXML) string {
 	return fmt.Sprintf("%s:%s-%s", p.Version.Epoch, p.Version.Ver, p.Version.Rel)
 }
 
-func Compare(a, b PackageXML) int {
+func rpmCompare(a, b RPMPackageXML) int {
 	if cmp := strings.Compare(a.Name, b.Name); cmp != 0 {
 		return cmp
 	}
 	return strings.Compare(a.Arch, b.Arch)
+}
+
+// packageMetaJSON serializes all PackageXML fields except Name, Arch, and Version into JSON
+func rpm2MetaJSON(p RPMPackageXML) ([]byte, error) {
+	meta := struct {
+		Checksum RPMChecksum
+		Packager string
+		Url      string
+		Format   RPMFormat
+	}{
+		Checksum: p.Checksum,
+		Packager: p.Packager,
+		Url:      p.Url,
+		Format:   p.Format,
+	}
+	return json.Marshal(meta)
 }
