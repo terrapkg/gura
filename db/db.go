@@ -1,7 +1,6 @@
 package db
 
 import (
-	"log"
 	"os"
 	"time"
 
@@ -77,7 +76,7 @@ func SetupDB() {
 	var err error
 	dsn := os.Getenv("GURA_DSN")
 	if dsn == "" {
-		log.Fatalln("GURA_DSN environment variable is not set")
+		l.Fatal("GURA_DSN environment variable is not set")
 	}
 
 	logger := zapgorm2.New(util.SetupLog("gorm"))

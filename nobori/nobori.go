@@ -1,7 +1,11 @@
-// Handle upstream requests.
+// nobori: upstream metadata fetching from various streams
 //
-// This fetches metadata from different upstream projects routinely.
+// Periodically synchronizes data from upstream sources and schedules future fetches
+// using a specialised backoff strategy ([calcTimeout]).
+//
 // The name nobori (上り) is Japanese for "up".
+//
+// This file implements the main scheduling, timeout calculation, and fetch loop logic for upstream requests.
 
 package nobori
 
@@ -16,11 +20,12 @@ import (
 
 var l = util.SetupLog("nobori")
 
+// Central channel for scheduling upstream stream fetches
 var queue chan db.Stream = make(chan db.Stream)
 
-// Calculate the timeout duration.
+// Calculate the timeout duration
 //
-// A logarithmic function is used to calculate the timeout duration.
+// A power-law function is used to calculate the timeout duration.
 // It starts with 1 minute minimum and increases logarithmically,
 // until it reaches a maximum of 1 hour.
 func calcTimeout(lastChk time.Time) time.Duration {
@@ -36,6 +41,7 @@ func calcTimeout(lastChk time.Time) time.Duration {
 	return time.Duration(f_t * float64(time.Minute))
 }
 
+// Wait until the next scheduled time for a stream and then enqueues it for processing
 func schedule(stream db.Stream) {
 	t := stream.LastChk.Add(calcTimeout(stream.LastChk))
 	l.Debug("sched", zap.String("stream", stream.ID.String()), zap.Time("until", t))
@@ -43,8 +49,11 @@ func schedule(stream db.Stream) {
 	queue <- stream
 }
 
+// Main loop for upstream metadata fetching
+//
+// Streams are processed from the queue as their scheduled time arrives.
 func FetchLoop() {
-	go swimGitHub()
+	go GhSwim()
 	var streams []db.Stream
 	r := db.DB.Find(&streams)
 	util.Yeet(l, "can't find streams", r.Error)
@@ -54,7 +63,7 @@ func FetchLoop() {
 	for {
 		switch stream := <-queue; stream.Forge {
 		case db.GitHub:
-			go fetchGitHub(stream)
+			go GhFetch(stream)
 		}
 	}
 }

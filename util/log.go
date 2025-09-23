@@ -9,6 +9,7 @@ import (
 
 // import "github.com/rs/zerolog"
 
+// Initialise logger with given package prefix
 func SetupLog(prefix string) *zap.Logger {
 	if os.Getenv("GURA_DEV") == "1" {
 		cfg := zap.NewDevelopmentConfig()
@@ -22,6 +23,7 @@ func SetupLog(prefix string) *zap.Logger {
 	return l
 }
 
+// Suicide if `e` is not nil
 func MaybeSuicide(l *zap.Logger, msg string, e error, fields ...zap.Field) {
 	if e != nil {
 		xerrors.Print(e)
@@ -29,6 +31,9 @@ func MaybeSuicide(l *zap.Logger, msg string, e error, fields ...zap.Field) {
 	}
 }
 
+// Yeet if `e` is not nil
+// 
+// Return whether an error was actually encountered
 func Yeet(l *zap.Logger, msg string, e error, fields ...zap.Field) bool {
 	if e != nil {
 		xerrors.Print(e)
