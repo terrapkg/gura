@@ -34,7 +34,7 @@ type Stream struct {
 	Fetch   string    `json:"fetch"`
 	Forge   ForgeType `json:"forge"`
 	Ver     string    `json:"ver"`
-	Mirrors string    `json:"mirrors"`
+	Mirrors string    `json:"mirrors"` // comma-separated list of mirrors
 }
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
@@ -55,8 +55,8 @@ type Pkg struct {
 
 	Meta datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"meta"`
 
-	StreamID string `json:"stream_id"`
-	Stream   Stream `json:"-"`
+	StreamID *uuid.UUID `json:"stream_id"`
+	Stream   Stream     `json:"-"`
 }
 
 // Repo represents a package repository. Its ID is a string.
