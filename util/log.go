@@ -3,14 +3,23 @@ package util
 import (
 	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/mdobak/go-xerrors"
 	"go.uber.org/zap"
 )
 
 // import "github.com/rs/zerolog"
 
+var dotenvLoaded = false
+
 // Initialise logger with given package prefix
 func SetupLog(prefix string) *zap.Logger {
+	if !dotenvLoaded {
+		if err := godotenv.Load(); err != nil {
+			panic(err)
+		}
+		dotenvLoaded = true
+	}
 	if os.Getenv("GURA_DEV") == "1" {
 		cfg := zap.NewDevelopmentConfig()
 		cfg.EncoderConfig.NameKey = prefix

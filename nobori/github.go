@@ -33,6 +33,9 @@ var ghRtTokIdx int = 0
 var ghQlTokIdx int = 0
 var ghl = util.SetupLog("github")
 
+// ————————————————————————————————————————————————————————————————————————————
+// Tokens
+
 // GitHub API authentication token
 type GHToken struct {
 	key   string
@@ -90,22 +93,23 @@ func GhFetch(stream db.Stream) {
 	}
 }
 
-// ————————————————————————————————————————————————————————————————————————————
-// Tokens
-
 // Helper to initialize a GitHub token pool by querying rate limits for each token
 //
 // The fetchFunc should populate quota and reset for each token.
-func ghInitTokenPool(envVar string, pool *[]GHToken, fetchFunc func(token string) (GHToken, error)) *GHToken {
+func ghInitTokenPool(pool *[]GHToken, fetchFunc func(token string) (GHToken, error)) *GHToken {
 	token_chan := make(chan *GHToken)
 	num := 0
-	for token := range strings.SplitSeq(os.Getenv(envVar), ";") {
+	for token := range strings.SplitSeq(os.Getenv("GURA_GITHUB_TOKENS"), ";") {
+		if token == "" {
+			continue
+		}
 		num++
 		go func(token string) {
 			tok, err := fetchFunc(token)
 			if err == nil {
 				token_chan <- &tok
 			} else {
+				util.Yeet(l, "cannot fetch", err)
 				token_chan <- nil
 			}
 		}(token)
@@ -115,6 +119,9 @@ func ghInitTokenPool(envVar string, pool *[]GHToken, fetchFunc func(token string
 		if tok != nil {
 			*pool = append(*pool, *tok)
 		}
+	}
+	if len(*pool) == 0 {
+		ghl.Panic("no tokens from GURA_GITHUB_TOKENS")
 	}
 	slices.SortFunc(*pool, func(a, b GHToken) int {
 		if a.quota == 0 && b.quota == 0 {
@@ -128,10 +135,7 @@ func ghInitTokenPool(envVar string, pool *[]GHToken, fetchFunc func(token string
 		}
 		return +1
 	})
-	if len(*pool) == 0 {
-		ghl.Panic("no tokens from " + envVar)
-	}
-	l.Info("pool initialised", zap.String("envVar", envVar), zap.Int("len", len(*pool)))
+	l.Info("pool initialised", zap.Int("len", len(*pool)))
 	return &(*pool)[0]
 }
 
@@ -139,7 +143,7 @@ func ghInitTokenPool(envVar string, pool *[]GHToken, fetchFunc func(token string
 //
 // Return the token with the highest quota.
 func ghFillTokRt() *GHToken {
-	return ghInitTokenPool("GURA_GITHUB_TOKENS", &ghTokRt, func(token string) (GHToken, error) {
+	return ghInitTokenPool(&ghTokRt, func(token string) (GHToken, error) {
 		req, err := http.NewRequest(http.MethodGet, "https://api.github.com/rate_limit", nil)
 		util.MaybeSuicide(ghl, "can't swim new req", err)
 		req.Header.Add("Authorization", "Bearer "+token)
@@ -157,26 +161,26 @@ func ghFillTokRt() *GHToken {
 //
 // Return the token with the highest quota.
 func ghFillTokQl() *GHToken {
-	return ghInitTokenPool("GURA_GITHUB_TOKENS", &ghTokQl, func(token string) (GHToken, error) {
+	return ghInitTokenPool(&ghTokQl, func(token string) (GHToken, error) {
 		var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
 			func(r *http.Request) {
 				r.Header.Add("Authorization", "Bearer "+token)
 			})
 		var q struct {
 			RateLimit struct {
-				remaining int16
-				resetAt   string
-			}
+				Remaining int16  `graphql:"remaining"`
+				ResetAt   string `graphql:"resetAt"`
+			} `graphql:"rateLimit"`
 		}
 		err := qlcli.Query(context.Background(), &q, nil)
 		if err != nil {
 			return GHToken{}, xerrors.Newf("query RateLimit -> give up token %s: %w", token, err)
 		}
-		reset, err := time.Parse(time.RFC3339, q.RateLimit.resetAt)
-		util.MaybeSuicide(ghl, "parse time", err, zap.String("resetAt", q.RateLimit.resetAt))
+		reset, err := time.Parse(time.RFC3339, q.RateLimit.ResetAt)
+		util.MaybeSuicide(ghl, "parse time", err, zap.String("resetAt", q.RateLimit.ResetAt))
 		return GHToken{
 			key:   token,
-			quota: q.RateLimit.remaining,
+			quota: q.RateLimit.Remaining,
 			reset: reset,
 		}, nil
 	})
@@ -296,16 +300,16 @@ func ghRtRelease(stream *db.Stream, remain string, token *GHToken) {
 // Fetch the latest tag from a GitHub repository using the GraphQL API
 //
 // Update the stream's version if a new tag is found.
-func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client) ([]string, http.Header) {
+func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client, token *GHToken) []string {
 	var q struct {
-		Repository struct {
-			Refs struct {
+		Repository struct { // https://docs.github.com/en/graphql/reference/objects#repository
+			Refs struct { // https://docs.github.com/en/graphql/reference/objects#refconnection
 				Edges []struct {
 					Node struct {
 						Name string
 					}
 				}
-			} `graphql:"refs(prefix: \"refs/tags/\", last: $len, orderBy: {field: TAG_COMMIT_DATE, direction: ASC})"`
+			} `graphql:"refs(refPrefix: \"refs/tags/\", last: $len, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, query: $prefix)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
 	var headers http.Header
@@ -316,13 +320,14 @@ func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client) ([]string
 		"len":    len,
 	}, ql.BindResponseHeaders(&headers))
 	if util.Yeet(ghl, "ql_tag_call", err) {
-		return nil, headers
+		return nil
 	}
 	tags := make([]string, 0, len)
 	for _, edge := range q.Repository.Refs.Edges {
 		tags = append(tags, edge.Node.Name)
 	}
-	return tags, headers
+	token.updTok(headers)
+	return tags
 }
 
 // Fetch the latest tag from a GitHub repository using the GraphQL API
@@ -330,7 +335,7 @@ func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client) ([]string
 func ghQlTag(stream *db.Stream, remain string, token *GHToken, qlcli ql.Client) {
 	prefix, remain := util.SplitOnce(remain, ' ')
 	owner, name := util.SplitOnce(remain, '/')
-	tags, headers := ghQlTagCall(prefix, owner, name, 1, qlcli)
+	tags := ghQlTagCall(prefix, owner, name, 1, qlcli, token)
 	if len(tags) == 0 {
 		return
 	}
@@ -338,7 +343,6 @@ func ghQlTag(stream *db.Stream, remain string, token *GHToken, qlcli ql.Client) 
 		stream.Ver = v
 		stream.LastUpd = time.Now()
 	}
-	token.updTok(headers)
 }
 
 const GH_STRM_HDLR_TEST_QL_MAX = 100
@@ -352,7 +356,7 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	if tokenrt.noMoreFish() {
 		tokenrt.waitForFish()
 	}
-	
+
 	// GHFetchType: RELEASE
 	releases := ghRtReleaseCall(strm, repo, tokenrt)
 	if len(releases) != 0 {
@@ -376,7 +380,7 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 
 	// GHFetchType: TAG
 	owner, name := util.SplitOnce(repo, '/')
-	tags, _ := ghQlTagCall("", owner, name, GH_STRM_HDLR_TEST_QL_MAX, *qlcli)
+	tags := ghQlTagCall("", owner, name, GH_STRM_HDLR_TEST_QL_MAX, *qlcli, tokenql)
 	if len(tags) > 0 {
 		for _, tag := range tags {
 			if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
@@ -389,11 +393,11 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 			zap.String("repo", repo),
 			zap.String("pkgid", pkg.ID.String()))
 	}
-	
+
 	// GHFetchType: QL
 	// TODO
 
-	l.Warn("No available methods for determining ver", 
+	l.Warn("No available methods for determining ver",
 		zap.String("repo", repo),
 		zap.String("pkgid", pkg.ID.String()))
 	return nil

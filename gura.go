@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/terrapkg/gura/api"
 	"github.com/terrapkg/gura/db"
 	"github.com/terrapkg/gura/kudari"
@@ -17,7 +16,7 @@ var l = util.SetupLog("gura")
 
 func main() {
 	zap.ReplaceGlobals(l)
-	util.MaybeSuicide(l, "cannot load .env", godotenv.Load())
+	// godotenv is already loaded by util.SetupLog
 
 	router_opts := api.RouterSetupOpts{
 		Version: ver,
