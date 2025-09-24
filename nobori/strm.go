@@ -4,7 +4,6 @@
 package nobori
 
 import (
-	"encoding/json"
 	"errors"
 	"maps"
 	"regexp"
@@ -13,20 +12,19 @@ import (
 
 	"github.com/mdobak/go-xerrors"
 	"github.com/terrapkg/gura/db"
-	"github.com/terrapkg/gura/repomd"
-	"github.com/terrapkg/gura/util"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
-var newStrmHdlrs = []func(p db.Pkg, url string, urls []string) bool{
-	func(p db.Pkg, url string, urls []string) bool {
+var newStrmHdlrs = []func(db *gorm.DB, p *db.Pkg, url string, urls []string) bool{
+	func(dbx *gorm.DB, p *db.Pkg, url string, urls []string) bool {
 		if !strings.HasPrefix(url, "github.com/") {
 			return false
 		}
-		strm := GhStrmHdlr(p, url)
+		strm := GhStrmHdlr(*p, url)
 		strm.Mirrors = strings.Join(urls, ",")
-		db.DB.Save(strm)
+		dbx.Save(strm)
+		p.StreamID = &strm.ID
 		return true
 	},
 }
@@ -42,24 +40,24 @@ func mangleUrl(url string) (new string) {
 }
 
 // Register package in db
-func RegPkg(p db.Pkg) error {
+func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	if p.StreamID != nil {
-		return db.DB.Save(p).Error
+		return dbx.Save(p).Error
 	}
 	url_ch := make(chan string)
-	UpTrace(p, url_ch)
+	UpTrace(*p, url_ch)
 	close(url_ch)
 	urls := map[string]struct{}{}
 	var strm *db.Stream
 recv:
 	url, ok := <-url_ch
 	if !ok {
-		db.DB.Save(p)
-		return handleNewStrm(p, slices.Collect(maps.Keys(urls)))
+		dbx.Save(p)
+		return handleNewStrm(dbx, p, slices.Collect(maps.Keys(urls)))
 	}
 	url = mangleUrl(url)
 	urls[url] = struct{}{}
-	if e := db.DB.Find(&strm, "? IN STRING_TO_ARRAY(mirrors)", url).Error; e != nil {
+	if e := dbx.Find(&strm, "? IN STRING_TO_ARRAY(mirrors)", url).Error; e != nil {
 		if errors.Is(e, gorm.ErrRecordNotFound) {
 			goto recv
 		}
@@ -75,44 +73,23 @@ recv:
 
 	strm.Mirrors = strings.Join(slices.Collect(maps.Keys(urls)), ",")
 	p.StreamID = &strm.ID
-	if err := db.DB.Save(p).Error; err != nil {
+	if err := dbx.Save(p).Error; err != nil {
 		return xerrors.Newf("can't save package in db (pkgid %s): %w", p.ID.String(), err)
 	}
-	if err := db.DB.Save(strm).Error; err != nil {
+	if err := dbx.Save(strm).Error; err != nil {
 		return xerrors.Newf("can't save stream in db (strmid %s): %w", strm.ID.String(), err)
 	}
 	return nil
 }
 
-func handleNewStrm(p db.Pkg, urls []string) error {
+func handleNewStrm(dbx *gorm.DB, p *db.Pkg, urls []string) error {
 	for _, hdlr := range newStrmHdlrs {
 		for _, url := range urls {
-			if hdlr(p, url, urls) {
+			if hdlr(dbx, p, url, urls) {
 				return nil
 			}
 		}
 	}
 	l.Debug("didn't find any existing strm, and no strm supported", zap.String("pkgid", p.ID.String()))
-	return db.DB.Save(p).Error
-}
-
-func UpTrace(p db.Pkg, url_ch chan string) {
-	switch p.Repo.Type {
-	case db.Rpm:
-		rpmTrace(p, url_ch)
-	default:
-		l.DPanic("unreachable in uptrace")
-	}
-}
-
-func rpmTrace(p db.Pkg, url_ch chan string) {
-	bs, err := p.Meta.MarshalJSON()
-	if util.Yeet(l, "error marshaling package metadata", err, zap.String("id", p.ID.String())) {
-		l.DPanic("DPanic")
-		return
-	}
-
-	var meta repomd.RPMMeta
-	json.Unmarshal(bs, &meta)
-	url_ch <- meta.Url
+	return dbx.Save(p).Error
 }

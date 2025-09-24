@@ -17,8 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
 	"github.com/terrapkg/gura/db"
-	"github.com/terrapkg/gura/util"
+	"github.com/terrapkg/gura/nobori"
 	. "github.com/terrapkg/gura/repomd"
+	"github.com/terrapkg/gura/util"
 	"go.uber.org/zap"
 )
 
@@ -188,7 +189,7 @@ func rpmFetch(repo db.Repo) {
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
 			util.MaybeSuicide(l, "Meta.UnmarshalJSON", pkgs[n].Meta.UnmarshalJSON(rpm2MetaJSON(p)))
-			tx.Save(&pkgs[n])
+			nobori.RegPkg(tx, &pkgs[n])
 			updated++
 		} else {
 			newpkgs = append(newpkgs, &db.Pkg{

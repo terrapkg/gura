@@ -296,7 +296,7 @@ func ghRtRelease(stream *db.Stream, remain string, token *GHToken) {
 // Fetch the latest tag from a GitHub repository using the GraphQL API
 //
 // Update the stream's version if a new tag is found.
-func ghQlTagCall(prefix, owner, name string, len int, token *GHToken, qlcli ql.Client) ([]string, http.Header) {
+func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client) ([]string, http.Header) {
 	var q struct {
 		Repository struct {
 			Refs struct {
@@ -330,7 +330,7 @@ func ghQlTagCall(prefix, owner, name string, len int, token *GHToken, qlcli ql.C
 func ghQlTag(stream *db.Stream, remain string, token *GHToken, qlcli ql.Client) {
 	prefix, remain := util.SplitOnce(remain, ' ')
 	owner, name := util.SplitOnce(remain, '/')
-	tags, headers := ghQlTagCall(prefix, owner, name, 1, token, qlcli)
+	tags, headers := ghQlTagCall(prefix, owner, name, 1, qlcli)
 	if len(tags) == 0 {
 		return
 	}
@@ -376,7 +376,7 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 
 	// GHFetchType: TAG
 	owner, name := util.SplitOnce(repo, '/')
-	tags, _ := ghQlTagCall("", owner, name, GH_STRM_HDLR_TEST_QL_MAX, tokenql, *qlcli)
+	tags, _ := ghQlTagCall("", owner, name, GH_STRM_HDLR_TEST_QL_MAX, *qlcli)
 	if len(tags) > 0 {
 		for _, tag := range tags {
 			if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
