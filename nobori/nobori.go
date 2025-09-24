@@ -23,6 +23,11 @@ var l = util.SetupLog("nobori")
 // Central channel for scheduling upstream stream fetches
 var queue chan db.Stream = make(chan db.Stream)
 
+// Upstream handlers
+// Each handler function should return a channel.
+// Sending a message to the channel indicates the swimmer is ready.
+var swimmers = []func() chan struct{}{GhSwim}
+
 // Calculate the timeout duration
 //
 // A power-law function is used to calculate the timeout duration.
@@ -49,14 +54,24 @@ func schedule(stream db.Stream) {
 	queue <- stream
 }
 
-// Main loop for upstream metadata fetching
+// Start the fetch loop for upstream metadata fetching
 //
-// Streams are processed from the queue as their scheduled time arrives.
-func FetchLoop() {
-	go GhSwim()
+// Return when nobori is ready.
+func StartFetchLoop() {
+	ready_chs := util.SliceMap(swimmers, func(swimmer func() chan struct{}) chan struct{} { return swimmer() })
 	var strms []db.Stream
 	r := db.DB.Find(&strms)
 	util.Yeet(l, "can't find streams", r.Error)
+
+	util.SliceEach(ready_chs, func(ch chan struct{}) { <-ch })
+
+	go fetchLoop(strms)
+}
+
+// Main loop for upstream metadata fetching
+//
+// Streams are processed from the queue as their scheduled time arrives.
+func fetchLoop(strms []db.Stream) {
 	for _, stream := range strms {
 		go schedule(stream)
 	}

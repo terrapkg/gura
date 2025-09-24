@@ -168,9 +168,9 @@ func ghFillTokQl() *GHToken {
 			})
 		var q struct {
 			RateLimit struct {
-				Remaining int16  `graphql:"remaining"`
-				ResetAt   string `graphql:"resetAt"`
-			} `graphql:"rateLimit"`
+				Remaining int16
+				ResetAt   string
+			}
 		}
 		err := qlcli.Query(context.Background(), &q, nil)
 		if err != nil {
@@ -190,14 +190,22 @@ func ghFillTokQl() *GHToken {
 // Swimming
 
 // the shark shall initialise the funny
-func GhSwim() {
+func GhSwim() chan struct{} {
 	go ghSwimRt()
 	go ghSwimQl()
+	ready := make(chan struct{}, 1)
+	go func() {
+		for len(ghTokRt) == 0 || len(ghTokQl) == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		ready <- struct{}{}
+	}()
+	return ready
 }
 
 // Process GitHub REST streams using available tokens
 func ghSwimRt() {
-	for token := ghFillTokRt(); token.noMoreFish(); token.thanksForAllTheFish(&ghRtTokIdx, &ghTokRt) {
+	for token := ghFillTokRt(); ; token.thanksForAllTheFish(&ghRtTokIdx, &ghTokRt) {
 		token.waitForFish()
 		for !token.noMoreFish() {
 			stream := <-ghRtPool
@@ -211,7 +219,7 @@ func ghSwimRt() {
 
 // Process GitHub GraphQL streams using available tokens
 func ghSwimQl() {
-	for token := ghFillTokQl(); token.noMoreFish(); token.thanksForAllTheFish(&ghQlTokIdx, &ghTokQl) {
+	for token := ghFillTokQl(); ; token.thanksForAllTheFish(&ghQlTokIdx, &ghTokQl) {
 		token.waitForFish()
 		qlcli := token.qlcli()
 		for {

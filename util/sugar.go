@@ -10,3 +10,9 @@ func SliceMap[T, U any](slice []T, fn func(T) U) []U {
 	}
 	return result
 }
+
+func SliceEach[T any](slice []T, fn func(T)) {
+	for _, v := range slice {
+		fn(v)
+	}
+}

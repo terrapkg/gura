@@ -23,8 +23,8 @@ func main() {
 	}
 
 	db.SetupDB()
+	nobori.StartFetchLoop()
 	go kudari.FetchLoop()
-	go nobori.FetchLoop()
 
 	router := api.SetupRouter(router_opts)
 	var listen_address = ":8080"

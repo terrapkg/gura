@@ -21,6 +21,7 @@ var newStrmHdlrs = []func(db *gorm.DB, p *db.Pkg, url string, urls []string) boo
 		if !strings.HasPrefix(url, "github.com/") {
 			return false
 		}
+		l.Debug("strm hdl github", zap.String("p", p.ID.String()))
 		strm := GhStrmHdlr(*p, url)
 		strm.Mirrors = strings.Join(urls, ",")
 		dbx.Save(strm)
@@ -83,6 +84,7 @@ recv:
 }
 
 func handleNewStrm(dbx *gorm.DB, p *db.Pkg, urls []string) error {
+	l.Debug("new strm", zap.String("ID", p.ID.String()))
 	for _, hdlr := range newStrmHdlrs {
 		for _, url := range urls {
 			if hdlr(dbx, p, url, urls) {
