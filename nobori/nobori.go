@@ -54,10 +54,10 @@ func schedule(stream db.Stream) {
 // Streams are processed from the queue as their scheduled time arrives.
 func FetchLoop() {
 	go GhSwim()
-	var streams []db.Stream
-	r := db.DB.Find(&streams)
+	var strms []db.Stream
+	r := db.DB.Find(&strms)
 	util.Yeet(l, "can't find streams", r.Error)
-	for _, stream := range streams {
+	for _, stream := range strms {
 		go schedule(stream)
 	}
 	for {
