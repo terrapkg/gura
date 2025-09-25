@@ -80,11 +80,9 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 }
 
 func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, url_ch chan string, p *db.Pkg, dbx *gorm.DB) error {
-	for _, mirror := range mirrors {
-		urls[mirror.Mirror] = struct{}{}
-	}
+	util.SliceEach(mirrors, func(m db.StreamMirror) { urls[m.Mirror] = struct{}{} })
 	var new_mirrors []db.StreamMirror
-	for url, ok := <-url_ch; ok; {
+	for url := range url_ch {
 		if _, has := urls[url]; !has {
 			new_mirrors = append(new_mirrors, db.StreamMirror{
 				StreamID: mirrors[0].StreamID,

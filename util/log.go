@@ -22,6 +22,7 @@ func SetupLog(prefix string) *zap.Logger {
 	}
 	if os.Getenv("GURA_DEV") == "1" {
 		cfg := zap.NewDevelopmentConfig()
+		// FIXME: this doesn't do anything?
 		cfg.EncoderConfig.NameKey = prefix
 		l := zap.Must(cfg.Build())
 		return l
@@ -41,7 +42,7 @@ func MaybeSuicide(l *zap.Logger, msg string, e error, fields ...zap.Field) {
 }
 
 // Yeet if `e` is not nil
-// 
+//
 // Return whether an error was actually encountered
 func Yeet(l *zap.Logger, msg string, e error, fields ...zap.Field) bool {
 	if e != nil {

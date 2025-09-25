@@ -47,9 +47,7 @@ func FetchLoop() {
 	l.Info("scheduling fetch loop")
 	var repos []db.Repo
 	r := db.DB.Find(&repos)
-	if r.Error != nil {
-		l.Fatal("error fetching repositories", zap.Error(r.Error))
-	}
+	util.MaybeSuicide(l, "error fetching repositories", r.Error)
 	// schedule fetch
 	for i, repo := range repos {
 		timeSinceFetch := time.Since(repo.UpdAt).Nanoseconds()
@@ -62,7 +60,7 @@ func FetchLoop() {
 			dur := time.Duration(fetchRepoTimer - timeSinceFetch)
 			l.Info("scheduled fetch", zap.Int("index", i+1), zap.Int64("total", r.RowsAffected), zap.Float64("duration_seconds", dur.Seconds()), zap.String("repoID", repo.ID))
 			time.Sleep(dur)
-			go fetch(repo)
+			fetch(repo)
 		}(i, repo)
 	}
 }

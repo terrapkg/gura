@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Set this variable by adding the build flag: -ldflags '-X main.ver=1.2.3'
 var ver = "version is not set!"
 var l = util.SetupLog("gura")
 
