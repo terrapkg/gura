@@ -23,10 +23,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const GH_WARN_DUR = 500 // ms
+
 // ? https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
 // no more than 100 parallel requests
-var ghRtPool = make(chan db.Stream)
-var ghQlPool = make(chan db.Stream)
+var ghRtPool = make(chan db.Stream, 100)
+var ghQlPool = make(chan db.Stream, 100)
 var ghTokRt []GHToken // GitHub REST Tokens
 var ghTokQl []GHToken // GitHub GraphQL Tokens
 var ghRtTokIdx int = 0
@@ -73,9 +75,9 @@ func (token *GHToken) waitForFish() {
 // Update token quota and reset time from HTTP response headers
 func (token *GHToken) updTok(h http.Header) {
 	q, err := strconv.ParseInt(h.Get("x-ratelimit-remaining"), 10, 16)
-	util.MaybeSuicide(ghl, "strconv x-ratelimit-remaining", err)
+	util.MaybeSuicide(ghl, "strconv", err, zap.String("x-ratelimit-remaining", h.Get("x-ratelimit-remaining")))
 	r, err := strconv.ParseInt(h.Get("x-ratelimit-reset"), 10, 64)
-	util.MaybeSuicide(ghl, "strconv x-ratelimit-reset", err)
+	util.MaybeSuicide(ghl, "strconv", err, zap.String("x-ratelimit-reset", h.Get("x-ratelimit-reset")))
 	token.quota = int16(q)
 	token.reset = time.Unix(r, 0)
 }
@@ -161,18 +163,16 @@ func ghFillTokRt() *GHToken {
 //
 // Return the token with the highest quota.
 func ghFillTokQl() *GHToken {
-	return ghInitTokenPool(&ghTokQl, func(token string) (GHToken, error) {
-		var qlcli = ql.NewClient("https://api.github.com/graphql", http.DefaultClient).WithRequestModifier(
-			func(r *http.Request) {
-				r.Header.Add("Authorization", "Bearer "+token)
-			})
+	return ghInitTokenPool(&ghTokQl, func(token string) (tok GHToken, err error) {
+		tok.key = token
+		qlcli := tok.qlcli()
 		var q struct {
 			RateLimit struct {
 				Remaining int16
 				ResetAt   string
 			}
 		}
-		err := qlcli.Query(context.Background(), &q, nil)
+		err = qlcli.Query(context.Background(), &q, nil)
 		if err != nil {
 			return GHToken{}, xerrors.Newf("query RateLimit -> give up token %s: %w", token, err)
 		}
@@ -196,7 +196,7 @@ func GhSwim() chan struct{} {
 	ready := make(chan struct{}, 1)
 	go func() {
 		for len(ghTokRt) == 0 || len(ghTokQl) == 0 {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 		}
 		ready <- struct{}{}
 	}()
@@ -269,18 +269,36 @@ func ghRtReleaseCall(stream *db.Stream, repo string, token *GHToken) []string {
 		return []string{}
 	}
 	req.Header.Add("Authorization", "Bearer "+token.key)
+	l.Debug("ghRtReleaseCall", zap.String("repo", repo))
+	t0 := time.Now()
 	resp, err := http.DefaultClient.Do(req)
+	if t := time.Since(t0); t.Milliseconds() > GH_WARN_DUR {
+		l.Warn("took " + t.String())
+	}
 	if util.Yeet(ghl, "resp fail", err, zap.String("fetch", stream.Fetch)) {
+		return []string{}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			l.Error("can't read body", zap.String("fetch", stream.Fetch), zap.Error(err))
+			body = []byte{}
+		}
+		l.Error("bad status", zap.String("status", resp.Status), zap.String("fetch", stream.Fetch), zap.ByteString("body", body))
 		return []string{}
 	}
 	token.updTok(resp.Header)
 	buf, err := io.ReadAll(resp.Body)
 	util.MaybeSuicide(ghl, "can't read buf", err)
-	var v []struct {
-		tag_name string
+	type Resp struct {
+		Tag string `json:"tag_name"`
 	}
-	json.Unmarshal(buf, &v)
-	return util.SliceMap(v, func(r struct{ tag_name string }) string { return r.tag_name })
+
+	var v []Resp
+	if util.Yeet(l, "can't unmarshal", json.Unmarshal(buf, &v), zap.ByteString("resp", buf)) {
+		return []string{}
+	}
+	return util.SliceMap(v, func(r Resp) string { return r.Tag })
 }
 
 // Fetch latest GitHub release using the REST API
@@ -320,16 +338,22 @@ func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client, token *GH
 			} `graphql:"refs(refPrefix: \"refs/tags/\", last: $len, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, query: $prefix)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
-	var headers http.Header
-	err := qlcli.Query(context.Background(), &q, map[string]any{
+	headers := http.Header{}
+	l.Debug("ghQlTagCall", zap.String("repo", owner+"/"+name))
+	t0 := time.Now()
+	err := qlcli.Query(context.TODO(), &q, map[string]any{
 		"prefix": prefix,
 		"owner":  owner,
 		"name":   name,
 		"len":    len,
 	}, ql.BindResponseHeaders(&headers))
+	if t := time.Since(t0); t.Milliseconds() > GH_WARN_DUR {
+		l.Warn("took " + t.String())
+	}
 	if util.Yeet(ghl, "ql_tag_call", err) {
 		return nil
 	}
+
 	tags := make([]string, 0, len)
 	for _, edge := range q.Repository.Refs.Edges {
 		tags = append(tags, edge.Node.Name)
@@ -353,7 +377,7 @@ func ghQlTag(stream *db.Stream, remain string, token *GHToken, qlcli ql.Client) 
 	}
 }
 
-const GH_STRM_HDLR_TEST_QL_MAX = 100
+const GH_STRM_HDLR_TEST_QL_MAX = 20
 
 func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	strm := &db.Stream{
@@ -377,7 +401,8 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 		l.Warn("Found releases, but cannot determine ver/prefix",
 			zap.Strings("releases", releases),
 			zap.String("repo", repo),
-			zap.String("pkgid", pkg.ID.String()))
+			zap.String("pkgid", pkg.ID.String()),
+			zap.String("pkgv", pkg.Ver))
 	}
 
 	tokenql := &ghTokQl[ghQlTokIdx]

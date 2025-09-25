@@ -2,11 +2,11 @@ package db
 
 import (
 	"os"
+	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/terrapkg/gura/util"
-	"gorm.io/datatypes"
+	dt "gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"moul.io/zapgorm2"
@@ -28,18 +28,44 @@ const (
 
 // Streams are grouped packages with the same upstream
 type Stream struct {
-	ID      uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	ID      dt.UUID   `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	LastChk time.Time `json:"last_chk"`
 	LastUpd time.Time `json:"last_upd"`
 	Fetch   string    `json:"fetch"`
 	Forge   ForgeType `json:"forge"`
 	Ver     string    `json:"ver"`
-	Mirrors string    `json:"mirrors"` // comma-separated list of mirrors
+
+	Mirrors []StreamMirror `json:"mirrors"` // comma-separated list of mirrors
+}
+
+func (s *Stream) BeforeCreate(tx *gorm.DB) (err error) {
+	if s.ID.IsEmpty() {
+		s.ID = dt.NewUUIDv4()
+	}
+	return nil
+}
+
+type StreamMirror struct {
+	ID       dt.UUID `gorm:"type:uuid" json:"id"`
+	StreamID dt.UUID `gorm:"type:uuid" json:"streamid"`
+	Stream   Stream  `json:"-"`
+	Mirror   string  `json:"mirror"` // url without `http(s)://` and trailing slash
+}
+
+func (m *StreamMirror) BeforeCreate(tx *gorm.DB) error {
+	if m.ID.IsEmpty() {
+		m.ID = dt.NewUUIDv4()
+	}
+	return nil
+}
+func (m *StreamMirror) BeforeSave(tx *gorm.DB) error {
+	m.Mirror = strings.TrimSuffix(m.Mirror, "/")
+	return nil
 }
 
 // Pkg is the package model. Uses UUID primary key instead of gorm.Model's uint.
 type Pkg struct {
-	ID        datatypes.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	ID        dt.UUID        `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at"`
@@ -53,10 +79,17 @@ type Pkg struct {
 	// Foreign key relationship referencing Repo.ID (string).
 	Repo Repo `gorm:"constraint:OnDelete:CASCADE;foreignKey:RepoID;references:ID" json:"-"`
 
-	Meta datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"meta"`
+	Meta dt.JSON `gorm:"type:jsonb;default:'{}'" json:"meta"`
 
-	StreamID *uuid.UUID `json:"stream_id"`
-	Stream   Stream     `json:"-"`
+	StreamID *dt.UUID `gorm:"type:uuid" json:"stream_id"`
+	Stream   Stream   `json:"-"`
+}
+
+func (s *Pkg) BeforeCreate(tx *gorm.DB) (err error) {
+	if s.ID.IsEmpty() {
+		s.ID = dt.NewUUIDv4()
+	}
+	return nil
 }
 
 // Repo represents a package repository. Its ID is a string.
@@ -73,6 +106,7 @@ var l = util.SetupLog("db")
 
 // SetupDB initializes the global DB connection and runs migrations.
 func SetupDB() {
+	l.Info("setting up db")
 	var err error
 	dsn := os.Getenv("GURA_DSN")
 	if dsn == "" {
@@ -85,5 +119,6 @@ func SetupDB() {
 	util.MaybeSuicide(l, "cannot open db", err)
 
 	// AutoMigrate in an order that respects foreign keys.
-	util.MaybeSuicide(l, "auto migrate failed", DB.AutoMigrate(&Repo{}, &Pkg{}, &Stream{}))
+	util.MaybeSuicide(l, "auto migrate failed", DB.AutoMigrate(&Repo{}, &Pkg{}, &Stream{}, &StreamMirror{}))
+	l.Info("db ready")
 }

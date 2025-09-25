@@ -58,6 +58,7 @@ func schedule(stream db.Stream) {
 //
 // Return when nobori is ready.
 func StartFetchLoop() {
+	l.Info("preparing fetch loop")
 	ready_chs := util.SliceMap(swimmers, func(swimmer func() chan struct{}) chan struct{} { return swimmer() })
 	var strms []db.Stream
 	r := db.DB.Find(&strms)
@@ -66,6 +67,7 @@ func StartFetchLoop() {
 	util.SliceEach(ready_chs, func(ch chan struct{}) { <-ch })
 
 	go fetchLoop(strms)
+	l.Info("nobori ready")
 }
 
 // Main loop for upstream metadata fetching

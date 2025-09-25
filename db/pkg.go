@@ -44,15 +44,15 @@ func SubmitPkg(pkg *Pkg) (*Pkg, error) {
 	return pkg, nil
 }
 
-func (p *Pkg) Update() error {
-	if err := DB.Save(p).Error; err != nil {
+func (s *Pkg) Update() error {
+	if err := DB.Save(s).Error; err != nil {
 		return err
 	}
 	return nil
 }
 
-func (p *Pkg) Delete() error {
-	if err := DB.Delete(p).Error; err != nil {
+func (s *Pkg) Delete() error {
+	if err := DB.Delete(s).Error; err != nil {
 		return err
 	}
 	return nil

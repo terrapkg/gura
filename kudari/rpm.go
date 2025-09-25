@@ -167,8 +167,7 @@ func rpmFetch(repo db.Repo) {
 	packages := util.MergeSortedDedup(allSlices, rpmCompare)
 
 	l.Info("processing packages", zap.String("repoID", repo.ID), zap.Int("count", len(packages)))
-	var newpkgs []*db.Pkg
-	updated, unchanged, lastIdx := 0, 0, 0
+	updated, unchanged, lastIdx, newpkgs := 0, 0, 0, 0
 	walked := make([]bool, len(pkgs))
 	tx := db.DB.Begin()
 	for _, p := range packages {
@@ -189,17 +188,18 @@ func rpmFetch(repo db.Repo) {
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
 			util.MaybeSuicide(l, "Meta.UnmarshalJSON", pkgs[n].Meta.UnmarshalJSON(rpm2MetaJSON(p)))
-			nobori.RegPkg(tx, &pkgs[n])
 			updated++
 		} else {
-			newpkgs = append(newpkgs, &db.Pkg{
+			p := &db.Pkg{
 				Name:    p.Name,
 				FullVer: rpmFullVer(p),
 				Ver:     p.Version.Ver,
 				Arch:    p.Arch,
 				RepoID:  repo.ID,
 				Meta:    rpm2MetaJSON(p),
-			})
+			}
+			util.Yeet(l, "cannot RegPkg", nobori.RegPkg(tx, p), zap.Any("pkg", p))
+			newpkgs++
 		}
 	}
 	var deletes []uuid.UUID
@@ -209,15 +209,12 @@ func rpmFetch(repo db.Repo) {
 		}
 	}
 	tx.Delete(&db.Pkg{}, "id IN (?)", deletes)
-	if newpkgs != nil {
-		tx.CreateInBatches(newpkgs, 5000)
-	}
 	tx.Commit()
 	l.Info("package update summary",
 		zap.String("repoID", repo.ID),
 		zap.Int("unchanged", unchanged),
 		zap.Int("updated", updated),
-		zap.Int("added", len(newpkgs)),
+		zap.Int("added", newpkgs),
 		zap.Int("deleted", len(deletes)),
 	)
 }

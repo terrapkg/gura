@@ -23,6 +23,7 @@ func UpTrace(p db.Pkg, url_ch chan string) {
 	default:
 		l.DPanic("unreachable in uptrace")
 	}
+	close(url_ch)
 }
 
 func rpmTrace(p db.Pkg, url_ch chan string) {

@@ -22,10 +22,6 @@ var l = util.SetupLog("kudari")
 const fetchRepoTimer = 3e10 // 30s
 
 func fetch(repo db.Repo) {
-	defer func() {
-		time.Sleep(fetchRepoTimer)
-		go fetch(repo)
-	}()
 	l.Info("fetching repository", zap.String("repoID", repo.ID))
 	switch repo.Type {
 	case db.Rpm:
@@ -33,13 +29,18 @@ func fetch(repo db.Repo) {
 	}
 	n, err := gorm.G[db.Repo](db.DB).Where("id = ?", repo.ID).Update(context.Background(), "upd_at", time.Now())
 	if util.Yeet(l, "error while updating upd_at", err, zap.String("repoID", repo.ID), zap.Error(err)) {
-		return
+		goto next
 	}
 	if n != 1 {
 		l.DPanic("bug: mut upd_at", zap.Int("n", n), zap.String("repoID", repo.ID))
-		return
+		goto next
 	}
 	l.Info("done fetching repository", zap.String("repoID", repo.ID))
+
+next:
+	time.Sleep(fetchRepoTimer)
+	go fetch(repo)
+
 }
 
 func FetchLoop() {
