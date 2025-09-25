@@ -1,6 +1,7 @@
 package util
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -16,7 +17,7 @@ var dotenvLoaded = false
 func SetupLog(prefix string) *zap.Logger {
 	if !dotenvLoaded {
 		if err := godotenv.Load(); err != nil {
-			panic(err)
+			fmt.Println("WARN(SetupLog):", err)
 		}
 		dotenvLoaded = true
 	}
