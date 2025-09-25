@@ -11,7 +11,6 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/mdobak/go-xerrors v1.0.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 	gorm.io/datatypes v1.2.6
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.30.3
@@ -23,7 +22,6 @@ require (
 	github.com/bytedance/sonic v1.13.2 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
-	github.com/cloudwego/iasm v0.2.0 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/gin-contrib/sse v1.0.0 // indirect

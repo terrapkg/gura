@@ -1,0 +1,25 @@
+name: Go
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  feluda:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Feluda License Scanner
+      uses: anistark/feluda@v1.10.0
+  golangci-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Golangci-lint
+      uses: golangci/golangci-lint-action@v8.0.0
