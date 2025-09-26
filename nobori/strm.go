@@ -44,15 +44,21 @@ var newStrmHdlrs = []func(p *db.Pkg, url string, urls []string) bool{
 		l.Debug("strm hdl github", zap.String("p", p.ID.String()))
 		strm := GhStrmHdlr(*p, url)
 		if strm == nil {
+			l.Warn("GhStrmHdlr returned nil", zap.String("url", url), zap.String("pkgid", p.ID.String()))
 			return false
 		}
-		db.DB.Save(strm) // to make sure we can see this later, don't use dbx
-		db.DB.Save(util.SliceMap(urls, func(url string) db.StreamMirror {
+		if util.Yeet(l, "fail to save stream", db.DB.Save(strm).Error, zap.String("pkgid", p.ID.String())) {
+			return false
+		}
+		mirrors := util.SliceMap(urls, func(url string) db.StreamMirror {
 			return db.StreamMirror{
 				StreamID: strm.ID,
 				Mirror:   url,
 			}
-		}))
+		})
+		if util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error, zap.String("pkgid", p.ID.String())) {
+			return false
+		}
 		p.StreamID = &strm.ID
 		return true
 	},
@@ -94,7 +100,9 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 		}
 		return handleExistingStrm(urls, mirrors, url_ch, p, dbx)
 	}
-	dbx.Save(p)
+	if err := dbx.Save(p).Error; err != nil {
+		return err
+	}
 	return handleNewStrm(dbx, p, slices.Collect(maps.Keys(urls)))
 }
 
