@@ -12,16 +12,16 @@ jobs:
   feluda:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         fetch-depth: 0
-
     - name: Feluda License Scanner
-      uses: anistark/feluda@v1.10.0
-  golangci-lint:
+      uses: anistark/feluda@v1.10.1
+
+  golangci:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         fetch-depth: 0
     - name: Golangci-lint
