@@ -21,6 +21,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 // This file `github.go` contains routines for interacting with GitHub's REST and GraphQL APIs,
 // including token management, rate limiting, and stream scheduling.
+//
+// # Why REST & GraphQL
+//
+// The REST API currently does not support sorting tags by their date of creation; and it currently
+// sorts them alphabetically, making it harder to obtain the latest tag.
+//
+// The GraphQL API on the other hand allows sorting by the date of commit for tags.
+//
+// Additionally GraphQL and REST provide separate primary rate limits (each 5000 points), meaning
+// more streams may be fetched with less tokens!
 package nobori
 
 import (
@@ -43,16 +53,36 @@ import (
 )
 
 const GH_WARN_DUR = 500 // ms
+const GH_STRM_HDLR_TEST_QL_MAX = 20
 
-// ? https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
-// no more than 100 parallel requests
-var ghRtPool = make(chan db.Stream, 100)
-var ghQlPool = make(chan db.Stream, 100)
-var ghTokRt []GHToken // GitHub REST Tokens
-var ghTokQl []GHToken // GitHub GraphQL Tokens
-var ghRtTokIdx int = 0
-var ghQlTokIdx int = 0
+var ghPrioPool = make(chan GHJob, 100)
+var ghPool = make(chan GHJob, 100)
+var ghTokmgr = GHTokMgr{}
 var ghl = util.SetupLog("github")
+
+// Fetch data from GitHub
+// 
+// Create a new job to fetch the latest version of the stream
+func GhFetch(stream db.Stream) {
+	defer schedule(stream)
+	job := GHJob{
+		Result: make(chan string),
+		Init: false,
+		Fetch: stream.Fetch,
+	}
+	ghPool <- job
+	ver, ok := <- job.Result
+	if !ok {
+		l.Error("cannot fetch stream")
+		return
+	}
+	if ver != stream.Ver {
+		stream.Ver = ver
+		stream.LastUpd = time.Now()
+	}
+	stream.LastChk = time.Now()
+	util.Yeet(ghl, "cannot save stream", db.DB.Save(stream).Error)
+}
 
 // ————————————————————————————————————————————————————————————————————————————
 // Tokens
@@ -101,23 +131,18 @@ func (token *GHToken) updTok(h http.Header) {
 	token.reset = time.Unix(r, 0)
 }
 
-// Route stream to the appropriate GitHub fetch pool (REST or GraphQL) based on its type
-func GhFetch(stream db.Stream) {
-	t, _ := util.SplitOnce(stream.Fetch, ' ')
-	i, err := strconv.ParseUint(t, 10, 8)
-	util.MaybeSuicide(ghl, "bad fetch", err, zap.String("stream.Fetch", stream.Fetch))
-	switch GHFetchType(i) {
-	case TAG, QL:
-		ghQlPool <- stream
-	case RELEASE:
-		ghRtPool <- stream
-	}
+type GHTokMgr struct {
+	rtToks               []GHToken // GitHub REST Tokens
+	qlToks               []GHToken // GitHub GraphQL Tokens
+	rtIdx                int
+	qlIdx                int
+	ghWaitSecondaryLimit time.Time
 }
 
 // Helper to initialize a GitHub token pool by querying rate limits for each token
 //
 // The fetchFunc should populate quota and reset for each token.
-func ghInitTokenPool(pool *[]GHToken, fetchFunc func(token string) (GHToken, error)) *GHToken {
+func (mgr *GHTokMgr) ghInitTokenPool(pool *[]GHToken, fetchFunc func(token string) (GHToken, error)) {
 	token_chan := make(chan *GHToken)
 	num := 0
 	for token := range strings.SplitSeq(os.Getenv("GURA_GITHUB_TOKENS"), ";") {
@@ -157,22 +182,22 @@ func ghInitTokenPool(pool *[]GHToken, fetchFunc func(token string) (GHToken, err
 		return +1
 	})
 	l.Info("pool initialised", zap.Int("len", len(*pool)))
-	return &(*pool)[0]
 }
 
 // Initialize the REST API token pool by querying rate limits for each token
 //
 // Return the token with the highest quota.
-func ghFillTokRt() *GHToken {
-	return ghInitTokenPool(&ghTokRt, func(token string) (GHToken, error) {
+func (mgr *GHTokMgr) ghFillTokRt() {
+	mgr.ghInitTokenPool(&mgr.rtToks, func(token string) (GHToken, error) {
 		req, err := http.NewRequest(http.MethodGet, "https://api.github.com/rate_limit", nil)
 		util.MaybeSuicide(ghl, "can't swim new req", err)
 		req.Header.Add("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return GHToken{}, xerrors.Newf("GET /rate_limit -> give up token %s: %w", token, err)
+			return GHToken{}, err
 		}
-		t := GHToken{key: token}
+		var t GHToken
+		t.key = token
 		t.updTok(resp.Header)
 		return t, nil
 	})
@@ -181,8 +206,8 @@ func ghFillTokRt() *GHToken {
 // Initialize the GraphQL API token pool by querying rate limits for each token
 //
 // Return the token with the highest quota.
-func ghFillTokQl() *GHToken {
-	return ghInitTokenPool(&ghTokQl, func(token string) (tok GHToken, err error) {
+func (mgr *GHTokMgr) ghFillTokQl() {
+	mgr.ghInitTokenPool(&mgr.qlToks, func(token string) (tok GHToken, err error) {
 		tok.key = token
 		qlcli := tok.qlcli()
 		var q struct {
@@ -196,59 +221,92 @@ func ghFillTokQl() *GHToken {
 			return GHToken{}, xerrors.Newf("query RateLimit -> give up token %s: %w", token, err)
 		}
 		reset, err := time.Parse(time.RFC3339, q.RateLimit.ResetAt)
-		util.MaybeSuicide(ghl, "parse time", err, zap.String("resetAt", q.RateLimit.ResetAt))
-		return GHToken{
-			key:   token,
-			quota: q.RateLimit.Remaining,
-			reset: reset,
-		}, nil
+		if err != nil {
+			return GHToken{}, err
+		}
+		tok.quota = q.RateLimit.Remaining
+		tok.reset = reset
+		return tok, nil
 	})
+}
+
+func (tokmgr *GHTokMgr) init() {
+	rt_ok := make(chan struct{}, 1)
+	go func() {
+		tokmgr.ghFillTokRt()
+		rt_ok <- struct{}{}
+	}()
+	tokmgr.ghFillTokQl()
+	<-rt_ok
+}
+
+func (tokmgr *GHTokMgr) ql() *GHToken {
+	return &tokmgr.qlToks[tokmgr.qlIdx]
+}
+func (tokmgr *GHTokMgr) rt() *GHToken {
+	return &tokmgr.rtToks[tokmgr.rtIdx]
+}
+
+func (tokmgr *GHTokMgr) rotateQl(token *GHToken) {
+	util.Assert(token.noMoreFish())
+	if token != &tokmgr.qlToks[tokmgr.qlIdx] {
+		token = &tokmgr.qlToks[tokmgr.qlIdx]
+		return
+	}
+	tokmgr.qlIdx = (tokmgr.qlIdx + 1) % len(tokmgr.qlToks)
+	token = &tokmgr.qlToks[tokmgr.qlIdx]
+}
+func (tokmgr *GHTokMgr) rotateRt(token *GHToken) {
+	util.Assert(token.noMoreFish())
+	if token != &tokmgr.rtToks[tokmgr.rtIdx] {
+		token = &tokmgr.rtToks[tokmgr.rtIdx]
+		return
+	}
+	tokmgr.rtIdx = (tokmgr.rtIdx + 1) % len(tokmgr.rtToks)
+	token = &tokmgr.rtToks[tokmgr.rtIdx]
 }
 
 // ————————————————————————————————————————————————————————————————————————————
 // Swimming
 
 // the shark shall initialise the funny
-func GhSwim() chan struct{} {
-	go ghSwimRt()
-	go ghSwimQl()
+func GhSwimInit() chan struct{} {
 	ready := make(chan struct{}, 1)
 	go func() {
-		for len(ghTokRt) == 0 || len(ghTokQl) == 0 {
-			time.Sleep(1 * time.Millisecond)
-		}
+		ghTokmgr.init()
 		ready <- struct{}{}
+		go ghSwim()
 	}()
 	return ready
 }
 
-// Process GitHub REST streams using available tokens
-func ghSwimRt() {
-	for token := ghFillTokRt(); ; token.thanksForAllTheFish(&ghRtTokIdx, &ghTokRt) {
-		token.waitForFish()
-		for !token.noMoreFish() {
-			stream := <-ghRtPool
-			ghFetch(&stream, token, nil)
-			go schedule(stream)
-			go db.DB.Save(stream)
-		}
-		ghl.Info("ran out of fish", zap.Int("token_idx", ghRtTokIdx))
+// Schedule jobs
+// 
+// Run max. 100 jobs concurrently as required by GitHub.
+// See the rate limit documentation for more information:
+// 
+// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
+func ghSwim() {
+	finishes := make(chan uint8, 100)
+	available := make(chan uint8, 100)
+	for i := range 100 {
+		available <- uint8(i)
 	}
-}
-
-// Process GitHub GraphQL streams using available tokens
-func ghSwimQl() {
-	for token := ghFillTokQl(); ; token.thanksForAllTheFish(&ghQlTokIdx, &ghTokQl) {
-		token.waitForFish()
-		qlcli := token.qlcli()
-		for {
-			stream := <-ghQlPool
-			go func(stream db.Stream) {
-				ghFetch(&stream, token, qlcli)
-				go schedule(stream)
-				db.DB.Save(stream)
-			}(stream)
+	for {
+		for len(available) == 0 || len(finishes) != 0 {
+			available <- <-finishes
 		}
+		var job GHJob
+		var idx uint8
+		select {
+		case job = <-ghPrioPool:
+			idx = <-available
+		case job = <-ghPool:
+			idx = <-available
+		default:
+			continue
+		}
+		go job.run(idx, finishes)
 	}
 }
 
@@ -264,88 +322,60 @@ const (
 	QL
 )
 
-// Dispatch a stream to the appropriate ghFetch handler based on its type and ghFetch mode
-func ghFetch(stream *db.Stream, token *GHToken, qlcli *ql.Client) {
-	s, remain := util.SplitOnce(stream.Fetch, ' ')
+type GHJob struct {
+	Result chan string
+	Init   bool
+	Fetch  string
+}
+
+func (job GHJob) run(idx uint8, finishes chan uint8) {
+	s, remain := util.SplitOnce(job.Fetch, ' ')
 	i, err := strconv.ParseUint(s, 10, 8)
-	if err != nil {
-		panic(err)
-	}
+	util.Assert(err == nil)
 	switch GHFetchType(i) {
 	case TAG:
-		ghQlTag(stream, remain, token, *qlcli)
+		job.qlTag(remain)
 	case RELEASE:
-		ghRtRelease(stream, remain, token)
+		job.rtRelease(remain)
 	case QL:
 		panic("todo") // TODO: ql fetch mode
 	}
-	stream.LastChk = time.Now()
+	finishes <- idx
 }
 
-func ghRtReleaseCall(stream *db.Stream, repo string, token *GHToken) []string {
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases", nil)
-	if util.Yeet(ghl, "req fail", err, zap.String("fetch", stream.Fetch)) {
-		return []string{}
-	}
-	req.Header.Add("Authorization", "Bearer "+token.key)
-	l.Debug("ghRtReleaseCall", zap.String("repo", repo))
+func (job GHJob) CallQl(q any, vars map[string]any) error {
+	tok := ghTokmgr.ql()
+retry:
+	headers := http.Header{}
 	t0 := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	err := tok.qlcli().Query(context.TODO(), q, vars, ql.BindResponseHeaders(&headers))
 	if t := time.Since(t0); t.Milliseconds() > GH_WARN_DUR {
 		l.Warn("took " + t.String())
 	}
-	if util.Yeet(ghl, "resp fail", err, zap.String("fetch", stream.Fetch)) {
-		return []string{}
+	if err == nil {
+		tok.updTok(headers)
+		return nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			l.Error("can't read body", zap.String("fetch", stream.Fetch), zap.Error(err))
-			body = []byte{}
-		}
-		l.Error("bad status", zap.String("status", resp.Status), zap.String("fetch", stream.Fetch), zap.ByteString("body", body))
-		return []string{}
+	if len(headers) == 0 {
+		return err
 	}
-	token.updTok(resp.Header)
-	buf, err := io.ReadAll(resp.Body)
-	util.MaybeSuicide(ghl, "can't read buf", err)
-	type Resp struct {
-		Tag string `json:"tag_name"`
+	tok.updTok(headers)
+	if tok.noMoreFish() {
+		ghTokmgr.rotateQl(tok)
+		goto retry
 	}
-
-	var v []Resp
-	if util.Yeet(l, "can't unmarshal", json.Unmarshal(buf, &v), zap.ByteString("resp", buf)) {
-		return []string{}
-	}
-	return util.SliceMap(v, func(r Resp) string { return r.Tag })
+	return err
 }
 
-// Fetch latest GitHub release using the REST API
-//
-// Update the stream's version if a new release is found.
-func ghRtRelease(stream *db.Stream, remain string, token *GHToken) {
-	prefix, repo := util.SplitOnce(remain, ' ')
-	releases := ghRtReleaseCall(stream, repo, token)
-	if len(releases) == 0 {
-		return
+func (job GHJob) qlTag(remain string) {
+	defer close(job.Result)
+	prefix, remain := util.SplitOnce(remain, ' ')
+	owner, name := util.SplitOnce(remain, '/')
+	length := 1
+	if job.Init {
+		length = GH_STRM_HDLR_TEST_QL_MAX
 	}
 
-	for _, v := range releases {
-		if v, ok := strings.CutPrefix(v, prefix); ok {
-			if stream.Ver != v {
-				stream.Ver = v
-				stream.LastUpd = time.Now()
-			}
-			return
-		}
-	}
-	ghl.Warn("can't find prefix", zap.String("fetch", stream.Fetch))
-}
-
-// Fetch the latest tag from a GitHub repository using the GraphQL API
-//
-// Update the stream's version if a new tag is found.
-func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client, token *GHToken) []string {
 	var q struct {
 		Repository struct { // https://docs.github.com/en/graphql/reference/objects#repository
 			Refs struct { // https://docs.github.com/en/graphql/reference/objects#refconnection
@@ -357,66 +387,121 @@ func ghQlTagCall(prefix, owner, name string, len int, qlcli ql.Client, token *GH
 			} `graphql:"refs(refPrefix: \"refs/tags/\", last: $len, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, query: $prefix)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
-	headers := http.Header{}
-	l.Debug("ghQlTagCall", zap.String("repo", owner+"/"+name))
-	t0 := time.Now()
-	err := qlcli.Query(context.TODO(), &q, map[string]any{
+	err := job.CallQl(&q, map[string]any{
 		"prefix": prefix,
 		"owner":  owner,
 		"name":   name,
-		"len":    len,
-	}, ql.BindResponseHeaders(&headers))
+		"len":    length,
+	})
+	if util.Yeet(ghl, "ql_tag_call", err) {
+		return
+	}
+
+	for _, edge := range q.Repository.Refs.Edges {
+		job.Result <- edge.Node.Name
+	}
+}
+
+func (job GHJob) CallRt(method string, url string) *http.Response {
+	tok := ghTokmgr.rt()
+retry:
+	req, err := http.NewRequest(method, url, nil)
+	if util.Yeet(ghl, "CallRt fail", xerrors.Newf("new req fail: %w", err)) {
+		return nil
+	}
+	req.Header.Add("Authorization", "Bearer "+tok.key)
+	t0 := time.Now()
+	resp, err := http.DefaultClient.Do(req)
 	if t := time.Since(t0); t.Milliseconds() > GH_WARN_DUR {
 		l.Warn("took " + t.String())
 	}
-	if util.Yeet(ghl, "ql_tag_call", err) {
+	switch {
+	case err != nil:
+		l.Error("CallRt resp fail", zap.String("fetch", job.Fetch), zap.Error(err))
 		return nil
+	case resp.StatusCode == http.StatusOK:
+		tok.updTok(resp.Header)
+		return resp
+	// ? https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#exceeding-the-rate-limit
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden:
+		tok.updTok(resp.Header)
+		if tok.noMoreFish() {
+			ghTokmgr.rotateRt(tok)
+			goto retry
+		}
+		// TODO: handle secondary rate limit
+		if resp.Header.Get("retry-after") != "" {
+			secs, err := strconv.ParseUint(resp.Header.Get("retry-after"), 10, 64)
+			util.MaybeSuicide(ghl, "fail to parse retry-after header", err, zap.String("fetch", job.Fetch))
+			// also stop other concurrent requests
+			time.Sleep(time.Duration(secs) * time.Second)
+			goto retry
+		}
+		// TODO: handle exponential backoff
 	}
-
-	tags := make([]string, 0, len)
-	for _, edge := range q.Repository.Refs.Edges {
-		tags = append(tags, edge.Node.Name)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		l.Error("can't read body", zap.String("fetch", job.Fetch), zap.Error(err))
+		body = []byte{}
 	}
-	token.updTok(headers)
-	return tags
+	l.Error("bad status", zap.String("status", resp.Status), zap.String("fetch", job.Fetch), zap.ByteString("body", body))
+	return nil
 }
 
-// Fetch the latest tag from a GitHub repository using the GraphQL API
-// Update the stream's version if a new tag is found.
-func ghQlTag(stream *db.Stream, remain string, token *GHToken, qlcli ql.Client) {
-	prefix, remain := util.SplitOnce(remain, ' ')
-	owner, name := util.SplitOnce(remain, '/')
-	tags := ghQlTagCall(prefix, owner, name, 1, qlcli, token)
-	if len(tags) == 0 {
+func (job GHJob) rtRelease(remain string) {
+	defer close(job.Result)
+	prefix, repo := util.SplitOnce(remain, ' ')
+	resp := job.CallRt(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases")
+	if resp == nil {
 		return
 	}
-	if v := strings.TrimPrefix(tags[0], prefix); v != stream.Ver {
-		stream.Ver = v
-		stream.LastUpd = time.Now()
+
+	buf, err := io.ReadAll(resp.Body)
+	util.MaybeSuicide(ghl, "can't read buf", err)
+	type Resp struct {
+		Tag string `json:"tag_name"`
+	}
+
+	var v []Resp
+	if util.Yeet(ghl, "can't unmarshal", json.Unmarshal(buf, &v), zap.ByteString("resp", buf)) {
+		return
+	}
+	for _, r := range v {
+		after, found := strings.CutPrefix(r.Tag, prefix)
+		if found {
+			job.Result <- after
+			if job.Init {
+				return
+			}
+		}
 	}
 }
-
-const GH_STRM_HDLR_TEST_QL_MAX = 20
 
 func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	strm := &db.Stream{
 		Forge: db.GitHub,
 	}
 	repo := strings.TrimSuffix(strings.TrimPrefix(url, "github.com/"), "/")
-	tokenrt := &ghTokRt[ghRtTokIdx]
-	if tokenrt.noMoreFish() {
-		tokenrt.waitForFish()
-	}
 
 	// GHFetchType: RELEASE
-	releases := ghRtReleaseCall(strm, repo, tokenrt)
-	if len(releases) != 0 {
-		for _, release := range releases {
-			if prefix, found := strings.CutSuffix(release, pkg.Ver); found {
-				strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
-				return strm
-			}
+	job := GHJob{
+		Result: make(chan string),
+		Init: true,
+		Fetch: fmt.Sprintf("%d %s %s", RELEASE, "", repo),
+	}
+	ghPrioPool <- job
+	var releases []string
+	for release := range job.Result {
+		releases = append(releases, release)
+		if prefix, found := strings.CutSuffix(release, pkg.Ver); found {
+			strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
+			strm.LastChk = time.Now()
+			strm.LastUpd = time.Now()
+			strm.Ver = pkg.Ver
+			return strm
 		}
+	}
+	if len(releases) > 0 {
 		l.Warn("Found releases, but cannot determine ver/prefix",
 			zap.Strings("releases", releases),
 			zap.String("repo", repo),
@@ -424,22 +509,26 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 			zap.String("pkgv", pkg.Ver))
 	}
 
-	tokenql := &ghTokQl[ghQlTokIdx]
-	if tokenql.noMoreFish() {
-		tokenql.waitForFish()
-	}
-	qlcli := tokenql.qlcli()
-
 	// GHFetchType: TAG
-	owner, name := util.SplitOnce(repo, '/')
-	tags := ghQlTagCall("", owner, name, GH_STRM_HDLR_TEST_QL_MAX, *qlcli, tokenql)
-	if len(tags) > 0 {
-		for _, tag := range tags {
-			if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
-				strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
-				return strm
-			}
+	job = GHJob{
+		Result: make(chan string),
+		Init: true,
+		Fetch: fmt.Sprintf("%d %s %s", TAG, "", repo),
+	}
+	ghPrioPool <- job
+
+	var tags []string
+	for tag := range job.Result {
+		tags = append(tags, tag)
+		if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
+			strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
+			strm.LastChk = time.Now()
+			strm.LastUpd = time.Now()
+			strm.Ver = pkg.Ver
+			return strm
 		}
+	}
+	if len(tags) > 0 {
 		l.Warn("Found tags, but cannot determine ver/prefix",
 			zap.Strings("tags", tags),
 			zap.String("repo", repo),
