@@ -35,3 +35,11 @@ func SliceEach[T any](slice []T, fn func(T)) {
 		fn(v)
 	}
 }
+
+func Flatten[T any](slice [][]T) []T {
+	result := make([]T, 0)
+	for _, subSlice := range slice {
+		result = append(result, subSlice...)
+	}
+	return result
+}
