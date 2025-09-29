@@ -43,6 +43,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	ql "github.com/hasura/go-graphql-client"
@@ -89,6 +90,7 @@ func GhFetch(stream db.Stream) {
 
 // GitHub API authentication token
 type GHToken struct {
+	mu    sync.Mutex
 	key   string
 	quota int16
 	reset time.Time
@@ -104,12 +106,14 @@ func (token *GHToken) qlcli() *ql.Client {
 
 // Check if the token's quota is exhausted
 func (token *GHToken) noMoreFish() bool {
+	token.mu.Lock()
+	defer token.mu.Unlock()
 	return token.quota == 0
 }
 
 // Sleep until the token's quota reset time if quota is exhausted
 func (token *GHToken) waitForFish() {
-	if token.quota == 0 {
+	if token.noMoreFish() {
 		ghl.Info("wait for token reset", zap.Time("reset", token.reset))
 		time.Sleep(time.Until(token.reset))
 	}
@@ -121,11 +125,14 @@ func (token *GHToken) updTok(h http.Header) {
 	util.MaybeSuicide(ghl, "strconv", err, zap.String("x-ratelimit-remaining", h.Get("x-ratelimit-remaining")))
 	r, err := strconv.ParseInt(h.Get("x-ratelimit-reset"), 10, 64)
 	util.MaybeSuicide(ghl, "strconv", err, zap.String("x-ratelimit-reset", h.Get("x-ratelimit-reset")))
+	token.mu.Lock()
+	defer token.mu.Unlock()
 	token.quota = int16(q)
 	token.reset = time.Unix(r, 0)
 }
 
 type GHTokMgr struct {
+	mu                   sync.Mutex
 	rtToks               []GHToken // GitHub REST Tokens
 	qlToks               []GHToken // GitHub GraphQL Tokens
 	rtIdx                int
@@ -240,14 +247,18 @@ func (tokmgr *GHTokMgr) init() {
 
 // Obtain and wait for the current GraphQL API token
 func (tokmgr *GHTokMgr) ql() *GHToken {
+	tokmgr.mu.Lock()
 	token := &tokmgr.qlToks[tokmgr.qlIdx]
+	tokmgr.mu.Unlock()
 	token.waitForFish()
 	return token
 }
 
 // Obtain and wait for the current REST API token
 func (tokmgr *GHTokMgr) rt() *GHToken {
+	tokmgr.mu.Lock()
 	token := &tokmgr.rtToks[tokmgr.rtIdx]
+	tokmgr.mu.Unlock()
 	token.waitForFish()
 	return token
 }
@@ -257,26 +268,32 @@ func (tokmgr *GHTokMgr) thanksForAllTheFishQl(token **GHToken) {
 	// we must not use defer (*token).waitForFish(),
 	// as (*token) is evaluated in-place.
 	util.Assert((*token).noMoreFish())
+	tokmgr.mu.Lock()
 	if *token != &tokmgr.qlToks[tokmgr.qlIdx] {
 		*token = &tokmgr.qlToks[tokmgr.qlIdx]
+		tokmgr.mu.Unlock()
 		(*token).waitForFish()
 		return
 	}
 	tokmgr.qlIdx = (tokmgr.qlIdx + 1) % len(tokmgr.qlToks)
 	*token = &tokmgr.qlToks[tokmgr.qlIdx]
+	tokmgr.mu.Unlock()
 	(*token).waitForFish()
 }
 
 // Rotate to the next REST token in the pool
 func (tokmgr *GHTokMgr) thanksForAllTheFishRt(token **GHToken) {
 	util.Assert((*token).noMoreFish())
+	tokmgr.mu.Lock()
 	if *token != &tokmgr.rtToks[tokmgr.rtIdx] {
 		*token = &tokmgr.rtToks[tokmgr.rtIdx]
+		defer tokmgr.mu.Unlock()
 		(*token).waitForFish()
 		return
 	}
 	tokmgr.rtIdx = (tokmgr.rtIdx + 1) % len(tokmgr.rtToks)
 	*token = &tokmgr.rtToks[tokmgr.rtIdx]
+	defer tokmgr.mu.Unlock()
 	(*token).waitForFish()
 }
 
@@ -342,7 +359,7 @@ type GHJob struct {
 	Fetch  string
 }
 
-func (job GHJob) run(idx uint8, finishes chan uint8) {
+func (job GHJob) run(idx uint8, finishes chan<- uint8) {
 	s, remain := util.SplitOnce(job.Fetch, ' ')
 	i, err := strconv.ParseUint(s, 10, 8)
 	util.Assert(err == nil)
@@ -420,7 +437,7 @@ func (job GHJob) CallRt(method string, url string) *http.Response {
 	tok := ghTokmgr.rt()
 retry:
 	req, err := http.NewRequest(method, url, nil)
-	if util.Yeet(ghl, "CallRt fail", xerrors.Newf("new req fail: %w", err)) {
+	if util.Yeet(ghl, "new req fail", err) {
 		return nil
 	}
 	req.Header.Add("Authorization", "Bearer "+tok.key)

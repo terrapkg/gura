@@ -1,0 +1,11 @@
+[
+  {
+    "label": "Run server",
+    "adapter": "Delve",
+    "request": "launch",
+    "mode": "debug",
+    "program": "."
+    // "args": [],
+    // "buildFlags": [],
+  }
+]
