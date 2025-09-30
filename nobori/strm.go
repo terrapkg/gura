@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdobak/go-xerrors"
@@ -135,6 +136,7 @@ next_job:
 				for _, u := range job.URLs {
 					urlMap[u] = struct{}{}
 				}
+				job.idx = i
 				mgr.jobs[i] = append(mgr.jobs[i], job)
 				var strm *db.Stream
 				if slices.ContainsFunc(job.ManifestFuncs, func(fn func(url string) *db.Stream) bool {
@@ -151,10 +153,10 @@ next_job:
 				goto next_job
 			}
 		}
-		l.Debug("run new stream job", zap.Int("job_idx", job.idx))
 		// TODO: also check database
 		job.idx = <-mgr.available
 		mgr.jobs[job.idx] = []*StrmChkJob{job}
+		l.Debug("run new stream job", zap.Int("job_idx", job.idx))
 		go mgr.hdlNewStrm(job)
 	default:
 		time.Sleep(10 * time.Millisecond)
@@ -224,6 +226,10 @@ func mangleUrl(url string) (new string) {
 	return string(match[2])
 }
 
+// From https://pkg.go.dev/database/sql#DB,
+// "Once DB.Begin is called, the returned Tx is bound to a single connection."
+var regpkg_db_mu sync.Mutex
+
 // Register package in db
 //
 // dbx is used to save only packages.
@@ -245,18 +251,26 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	}
 
 	var mirrors []db.StreamMirror
-	// FIXME: obtain a list of StreamMirror with the same id!
-	// FIXME: join different Streams?
-	if err := dbx.Find(&mirrors, "stream_id IN (SELECT stream_id FROM stream_mirrors WHERE mirror IN ?)", slices.Collect(maps.Keys(urls))).Error; err != nil {
+	urls_slice := slices.Collect(maps.Keys(urls))
+	regpkg_db_mu.Lock()
+	// PERF: consider join instead of subquery?
+	err := dbx.Find(&mirrors, "stream_id IN (SELECT stream_id FROM stream_mirrors WHERE mirror IN ?)", urls_slice).Error
+	regpkg_db_mu.Unlock()
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			goto new
 		} else {
-			return xerrors.Newf("can't find StreamMirror in db (pkgid %s): %w", p.ID.String(), err)
+			regpkg_db_mu.Lock()
+			dbx.Save(p)
+			regpkg_db_mu.Unlock()
+			return xerrors.Newf("can't find StreamMirror in db: %w", err)
 		}
 	}
 	if len(mirrors) != 0 {
 		return handleExistingStrm(urls, mirrors, p, dbx)
 	}
+	regpkg_db_mu.Lock()
+	defer regpkg_db_mu.Unlock()
 	if err := dbx.Save(p).Error; err != nil {
 		return err
 	}
@@ -277,6 +291,8 @@ func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, p *
 	util.SliceEach(mirrors, func(m db.StreamMirror) { urls[m.Mirror] = struct{}{} })
 	for _, mirror := range mirrors {
 		if mirror.StreamID != mirrors[0].StreamID {
+			regpkg_db_mu.Lock()
+			defer regpkg_db_mu.Unlock()
 			dbx.Model(&db.Pkg{}).Where("stream_id = ?", mirror.StreamID).Update("stream_id", mirrors[0].StreamID)
 			mirror.StreamID = mirrors[0].StreamID
 			new_mirrors = append(new_mirrors, mirror)
@@ -292,6 +308,8 @@ func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, p *
 		}
 	}
 	p.StreamID = &mirrors[0].StreamID
+	regpkg_db_mu.Lock()
+	defer regpkg_db_mu.Unlock()
 	if err := dbx.Save(p).Error; err != nil {
 		return xerrors.Newf("can't save package in db (pkgid %s): %w", p.ID.String(), err)
 	}

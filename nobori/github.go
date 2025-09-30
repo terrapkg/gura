@@ -61,30 +61,6 @@ var ghPool = make(chan GHJob, 100)
 var ghTokmgr = GHTokMgr{}
 var ghl = util.SetupLog("github")
 
-// Fetch data from GitHub
-//
-// Create a new job to fetch the latest version of the stream
-func GhFetch(stream db.Stream) {
-	defer schedule(stream)
-	job := GHJob{
-		Result: make(chan string),
-		Init:   false,
-		Fetch:  stream.Fetch,
-	}
-	ghPool <- job
-	ver, ok := <-job.Result
-	if !ok {
-		l.Error("cannot fetch stream")
-		return
-	}
-	if ver != stream.Ver {
-		stream.Ver = ver
-		stream.LastUpd = time.Now()
-	}
-	stream.LastChk = time.Now()
-	util.Yeet(ghl, "cannot save stream", db.DB.Save(stream).Error)
-}
-
 // ————————————————————————————————————————————————————————————————————————————
 // Tokens
 

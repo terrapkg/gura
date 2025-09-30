@@ -103,10 +103,10 @@ func fetchLoop(strms []db.Stream) {
 		githubJobs = handleCompletedGitHubJobs(githubJobs)
 		var stream db.Stream
 		select {
-			case stream = <-queue:
-			default:
-				time.Sleep(10 * time.Millisecond)
-				continue
+		case stream = <-queue:
+		default:
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		switch stream.Forge {
 		case db.GitHub:
