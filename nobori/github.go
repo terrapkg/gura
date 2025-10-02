@@ -313,6 +313,7 @@ func ghSwim() {
 		default:
 			continue
 		}
+		l.Debug("new job", zap.Uint8("idx", idx))
 		go job.run(idx, finishes)
 	}
 }
