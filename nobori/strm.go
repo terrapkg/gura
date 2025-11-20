@@ -57,20 +57,10 @@ type StrmChkDoneMsg struct {
 }
 
 type StrmChkJob struct {
-	// urls for the stream. If empty, indicates job finished.
-	URLs []string
-	// obtain the final resulting stream (saved)
-	ch  chan<- *db.Stream
-	idx int
-	// version provided by package
-	Ver string
-	// manifest functions, each function takes in a package version as argument,
-	// return an optional stream (not saved) if confirm
-	// register this function via [StrmChkJob.Manifest]()
-	//
-	// As to why we need to save these functions, if a new job with the same upstream
-	// is requested, we can quickly check via these functions whether the version
-	// matches, then quit job earlier.
+	URLs          []string
+	ch            chan<- *db.Stream
+	idx           int
+	Ver           string
 	ManifestFuncs []func(string) *db.Stream
 }
 
@@ -108,7 +98,6 @@ func (mgr NewStrmManager) Loop() {
 					Mirror:   url,
 				}
 			})
-			clear(mgr.jobs[msg.idx][0].URLs) // job finished
 			util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error)
 
 			for _, job := range mgr.jobs[msg.idx] {
@@ -161,27 +150,19 @@ func (mgr NewStrmManager) hdlNewStrm(job *StrmChkJob) {
 				l.Debug("new strm success", zap.String("url", url))
 				return
 			}
-			if len(job.URLs) == 0 {
-				// indicates job finished
-				return
-			}
 		}
 	}
 	l.Debug("didn't find any existing strm, and no strm supported", zap.Strings("urls", job.URLs))
 }
 
 func (job *StrmChkJob) Manifest(fn func(string) *db.Stream) bool {
-	if len(job.URLs) == 0 {
-		// indnicates job finished
-		return true
-	}
 	job.ManifestFuncs = append(job.ManifestFuncs, fn)
 	if strm := fn(job.Ver); strm != nil {
-		db.DB.Save(strm)
 		newStrmMgr.done <- StrmChkDoneMsg{
 			strm: strm,
 			idx:  job.idx,
 		}
+		db.DB.Save(strm)
 		return true
 	}
 	return false
@@ -210,7 +191,6 @@ func mangleUrl(url string) (new string) {
 // Register package in db
 //
 // dbx is used to save only packages.
-// WARN: currently we assume the upstream does not change for any packages
 func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	l.Debug("RegPkg", zap.String("pkgname", p.Name))
 	if p.StreamID != nil {
@@ -237,12 +217,6 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	if err := dbx.Save(p).Error; err != nil {
 		return err
 	}
-	// WARN: potential race conditions
-	// we can do this after the db query, we suspect the chances of race conditions is near impossible
-	// given the stream is first saved, and only then is it removed from the array in the mgr.
-	// this hypothesis clearly depends on the speed of dbx.Find() and the num of urls, so we will need
-	// to revise this for prod at a later stage.
-	// NOTE: for very good reasons, we should run RegPkg for pkgs without StreamID periodically
 	newStrmMgr.Check(slices.Collect(maps.Keys(urls)))
 	return nil
 }
