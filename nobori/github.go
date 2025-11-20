@@ -21,6 +21,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 // This file `github.go` contains routines for interacting with GitHub's REST and GraphQL APIs,
 // including token management, rate limiting, and stream scheduling.
+//
+// # Why REST & GraphQL
+//
+// The REST API currently does not support sorting tags by their date of creation; and it currently
+// sorts them alphabetically, making it harder to obtain the latest tag.
+//
+// The GraphQL API on the other hand allows sorting by the date of commit for tags.
+//
+// Additionally GraphQL and REST provide separate primary rate limits (each 5000 points), meaning
+// more streams may be fetched with less tokens!
 package nobori
 
 import (
