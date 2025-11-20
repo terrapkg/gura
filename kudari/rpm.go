@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"sync"
 
 	"net/http"
 	"strings"
@@ -138,7 +137,7 @@ func rpmGetPrimary(repoID, fetch string, repomd RPMRepomd) (primary *RPMPrimaryX
 
 // Retrieve a sorted list of [rpmPackageXML] structs for each package in the primary.xml file
 //
-// The ss are sent to the provided channel.
+// The results are sent to the provided channel.
 // This only obtains the per-arch package list as given in `fetch`.
 //
 // Sorting is defined by [rpmCompare].
@@ -189,7 +188,6 @@ func rpmFetch(repo db.Repo) {
 	l.Info("processing packages", zap.String("repoID", repo.ID), zap.Int("count", len(packages)))
 	updated, unchanged, lastIdx, newpkgs := 0, 0, 0, 0
 	walked := make([]bool, len(pkgs))
-	var wg sync.WaitGroup
 	tx := db.DB.Begin()
 	for _, p := range packages {
 		if util.SortedContSearch(pkgs, p, func(a db.Pkg, b RPMPackageXML) int {
@@ -209,23 +207,18 @@ func rpmFetch(repo db.Repo) {
 			pkgs[n].FullVer = fullver
 			pkgs[n].Ver = p.Version.Ver
 			util.MaybeSuicide(l, "Meta.UnmarshalJSON", pkgs[n].Meta.UnmarshalJSON(rpm2MetaJSON(p)))
-			tx.Save(pkgs[n])
 			updated++
 		} else {
+			p := &db.Pkg{
+				Name:    p.Name,
+				FullVer: rpmFullVer(p),
+				Ver:     p.Version.Ver,
+				Arch:    p.Arch,
+				RepoID:  repo.ID,
+				Meta:    rpm2MetaJSON(p),
+			}
+			util.Yeet(l, "cannot RegPkg", nobori.RegPkg(tx, p), zap.Any("pkg", p))
 			newpkgs++
-			wg.Add(1)
-			go func(p RPMPackageXML) {
-				defer wg.Done()
-				pkg := &db.Pkg{
-					Name:    p.Name,
-					FullVer: rpmFullVer(p),
-					Ver:     p.Version.Ver,
-					Arch:    p.Arch,
-					RepoID:  repo.ID,
-					Meta:    rpm2MetaJSON(p),
-				}
-				util.Yeet(l, "cannot RegPkg", nobori.RegPkg(tx, pkg), zap.Any("pkg", pkg))
-			}(p)
 		}
 	}
 	var deletes []uuid.UUID
@@ -235,7 +228,6 @@ func rpmFetch(repo db.Repo) {
 		}
 	}
 	tx.Delete(&db.Pkg{}, "id IN (?)", deletes)
-	wg.Wait()
 	tx.Commit()
 	l.Info("package update summary",
 		zap.String("repoID", repo.ID),
