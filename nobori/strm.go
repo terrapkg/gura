@@ -28,7 +28,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/mdobak/go-xerrors"
 	"github.com/terrapkg/gura/db"
@@ -37,144 +36,31 @@ import (
 	"gorm.io/gorm"
 )
 
-const STRM_MGR_POOL_MAX = 100
-
-type NewStrmManager struct {
-	// Receive new stream results
-	newStrmPool chan string
-	// Requests to get streams
-	JobRequest chan *StrmChkJob
-	// List of urls of new streams
-	newStrms  [STRM_MGR_POOL_MAX][]string
-	jobs      [STRM_MGR_POOL_MAX][]StrmChkJob
-	done      chan StrmChkDoneMsg
-	available chan int
-}
-
-type StrmChkDoneMsg struct {
-	strm *db.Stream
-	idx  int
-}
-
-type StrmChkJob struct {
-	URLs          []string
-	ch            chan<- *db.Stream
-	idx           int
-	Ver           string
-	ManifestFuncs []func(string) *db.Stream
-}
-
-var newStrmMgr NewStrmManager
-
-func (mgr NewStrmManager) Init() {
-	mgr.newStrmPool = make(chan string, STRM_MGR_POOL_MAX)
-	mgr.available = make(chan int, STRM_MGR_POOL_MAX)
-	for i := range STRM_MGR_POOL_MAX {
-		mgr.available <- i
-	}
-	mgr.done = make(chan StrmChkDoneMsg, 100)
-	go mgr.Loop()
-}
-
-func (mgr NewStrmManager) Check(urls []string) *db.Stream {
-	ch := make(chan *db.Stream)
-	job := &StrmChkJob{
-		URLs: util.SliceMap(urls, mangleUrl),
-		ch:   ch,
-	}
-	mgr.JobRequest <- job
-
-	return <-ch
-}
-
-func (mgr NewStrmManager) Loop() {
-	for {
-		for len(mgr.done) > 0 || len(mgr.available) == 0 {
-			msg := <-mgr.done
-			mgr.available <- msg.idx
-			mirrors := util.SliceMap(mgr.jobs[msg.idx][0].URLs, func(url string) db.StreamMirror {
-				return db.StreamMirror{
-					StreamID: msg.strm.ID,
-					Mirror:   url,
-				}
-			})
-			util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error)
-
-			for _, job := range mgr.jobs[msg.idx] {
-				job.ch <- msg.strm
-			}
-			clear(mgr.newStrms[msg.idx])
-			clear(mgr.jobs[msg.idx])
-		}
-		if len(mgr.JobRequest) == 0 {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		job := <-mgr.JobRequest
-		found := false
-		for i, newStrm := range mgr.newStrms {
-			if slices.ContainsFunc(newStrm, func(url string) bool { return slices.Contains(job.URLs, url) }) {
-				found = true
-				for _, url := range job.URLs {
-					if !slices.Contains(mgr.newStrms[i], url) {
-						mgr.newStrms[i] = append(mgr.newStrms[i], url)
-					}
-				}
-				mgr.jobs[i] = append(mgr.jobs[i], *job)
-				var strm *db.Stream
-				if slices.ContainsFunc(job.ManifestFuncs, func(fn func(url string) *db.Stream) bool {
-					return slices.ContainsFunc(job.URLs, func(url string) bool { strm = fn(url); return strm != nil })
-				}) {
-					mgr.done <- StrmChkDoneMsg{
-						strm: strm,
-						idx:  i,
-					}
-					db.DB.Save(strm)
-				}
-				continue
-			}
-		}
-		if !found {
-			// TODO: also check database
-			job.idx = <-mgr.available
-			go mgr.hdlNewStrm(job)
-		}
-	}
-}
-
-func (mgr NewStrmManager) hdlNewStrm(job *StrmChkJob) {
-	l.Debug("new strm", zap.Strings("urls", job.URLs))
-	for _, hdlr := range newStrmHdlrs {
-		for _, url := range job.URLs {
-			if hdlr(job, url, job.URLs) {
-				l.Debug("new strm success", zap.String("url", url))
-				return
-			}
-		}
-	}
-	l.Debug("didn't find any existing strm, and no strm supported", zap.Strings("urls", job.URLs))
-}
-
-func (job *StrmChkJob) Manifest(fn func(string) *db.Stream) bool {
-	job.ManifestFuncs = append(job.ManifestFuncs, fn)
-	if strm := fn(job.Ver); strm != nil {
-		newStrmMgr.done <- StrmChkDoneMsg{
-			strm: strm,
-			idx:  job.idx,
-		}
-		db.DB.Save(strm)
-		return true
-	}
-	return false
-}
-
-var newStrmHdlrs = []func(job *StrmChkJob, url string, urls []string) bool{
-	func(job *StrmChkJob, url string, urls []string) bool {
+var newStrmHdlrs = []func(p *db.Pkg, url string, urls []string) bool{
+	func(p *db.Pkg, url string, urls []string) bool {
 		if !strings.HasPrefix(url, "github.com/") {
 			return false
 		}
-		l.Debug("strm hdl github")
-		return GhStrmHdlr(job, url)
+		l.Debug("strm hdl github", zap.String("p", p.ID.String()))
+		strm := GhStrmHdlr(*p, url)
+		if strm == nil {
+			l.Warn("GhStrmHdlr returned nil", zap.String("url", url), zap.String("pkgid", p.ID.String()))
+			return false
+		}
+		if util.Yeet(l, "fail to save stream", db.DB.Save(strm).Error, zap.String("pkgid", p.ID.String())) {
+			return false
+		}
+		mirrors := util.SliceMap(urls, func(url string) db.StreamMirror {
+			return db.StreamMirror{
+				StreamID: strm.ID,
+				Mirror:   url,
+			}
+		})
+		if util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error, zap.String("pkgid", p.ID.String())) {
+			return false
+		}
+		p.StreamID = &strm.ID
+		return true
 	},
 }
 
@@ -217,8 +103,7 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	if err := dbx.Save(p).Error; err != nil {
 		return err
 	}
-	newStrmMgr.Check(slices.Collect(maps.Keys(urls)))
-	return nil
+	return handleNewStrm(dbx, p, slices.Collect(maps.Keys(urls)))
 }
 
 func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, url_ch chan string, p *db.Pkg, dbx *gorm.DB) error {
@@ -244,4 +129,18 @@ func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, url
 	}
 	l.Debug("reg success", zap.String("pkgid", p.ID.String()))
 	return nil
+}
+
+func handleNewStrm(dbx *gorm.DB, p *db.Pkg, urls []string) error {
+	l.Debug("new strm", zap.String("ID", p.ID.String()), zap.Strings("urls", urls))
+	for _, hdlr := range newStrmHdlrs {
+		for _, url := range urls {
+			if hdlr(p, url, urls) {
+				l.Debug("new strm success", zap.String("pkgname", p.Name), zap.String("url", url))
+				return nil
+			}
+		}
+	}
+	l.Debug("didn't find any existing strm, and no strm supported", zap.String("pkgname", p.Name), zap.Strings("urls", urls))
+	return dbx.Save(p).Error
 }

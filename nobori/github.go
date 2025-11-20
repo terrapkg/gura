@@ -491,7 +491,7 @@ func (job GHJob) rtRelease(remain string) {
 	}
 }
 
-func GhStrmHdlr(strm_job *StrmChkJob, url string) bool {
+func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	strm := &db.Stream{
 		Forge: db.GitHub,
 	}
@@ -504,27 +504,23 @@ func GhStrmHdlr(strm_job *StrmChkJob, url string) bool {
 		Fetch:  fmt.Sprintf("%d %s %s", RELEASE, "", repo),
 	}
 	ghPrioPool <- job
-	if strm_job.Manifest(func(ver string) *db.Stream {
-		var releases []string
-		for release := range job.Result {
-			releases = append(releases, release)
-			if prefix, found := strings.CutSuffix(release, ver); found {
-				strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
-				strm.LastChk = time.Now()
-				strm.LastUpd = time.Now()
-				strm.Ver = ver
-				return strm
-			}
+	var releases []string
+	for release := range job.Result {
+		releases = append(releases, release)
+		if prefix, found := strings.CutSuffix(release, pkg.Ver); found {
+			strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
+			strm.LastChk = time.Now()
+			strm.LastUpd = time.Now()
+			strm.Ver = pkg.Ver
+			return strm
 		}
-		if len(releases) > 0 {
-			l.Warn("Found releases, but cannot determine ver/prefix",
-				zap.Strings("releases", releases),
-				zap.String("repo", repo),
-				zap.String("ver", ver))
-		}
-		return nil
-	}) {
-		return true
+	}
+	if len(releases) > 0 {
+		l.Warn("Found releases, but cannot determine ver/prefix",
+			zap.Strings("releases", releases),
+			zap.String("repo", repo),
+			zap.String("pkgid", pkg.ID.String()),
+			zap.String("pkgv", pkg.Ver))
 	}
 
 	// GHFetchType: TAG
@@ -535,32 +531,29 @@ func GhStrmHdlr(strm_job *StrmChkJob, url string) bool {
 	}
 	ghPrioPool <- job
 
-	if strm_job.Manifest(func(ver string) *db.Stream {
-		var tags []string
-		for tag := range job.Result {
-			tags = append(tags, tag)
-			if prefix, found := strings.CutSuffix(tag, ver); found {
-				strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
-				strm.LastChk = time.Now()
-				strm.LastUpd = time.Now()
-				strm.Ver = ver
-				return strm
-			}
+	var tags []string
+	for tag := range job.Result {
+		tags = append(tags, tag)
+		if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
+			strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
+			strm.LastChk = time.Now()
+			strm.LastUpd = time.Now()
+			strm.Ver = pkg.Ver
+			return strm
 		}
-		if len(tags) > 0 {
-			l.Warn("Found tags, but cannot determine ver/prefix",
-				zap.Strings("tags", tags),
-				zap.String("repo", repo),
-				zap.String("ver", ver))
-		}
-		return nil
-	}) {
-		return true
+	}
+	if len(tags) > 0 {
+		l.Warn("Found tags, but cannot determine ver/prefix",
+			zap.Strings("tags", tags),
+			zap.String("repo", repo),
+			zap.String("pkgid", pkg.ID.String()))
 	}
 
 	// GHFetchType: QL
 	// TODO
 
-	l.Warn("No available methods for determining ver", zap.String("repo", repo))
-	return false
+	l.Warn("No available methods for determining ver",
+		zap.String("repo", repo),
+		zap.String("pkgid", pkg.ID.String()))
+	return nil
 }
