@@ -53,6 +53,6 @@ func rpmTrace(p db.Pkg, url_ch chan string) {
 	}
 
 	var meta repomd.RPMMeta
-	util.MaybeSuicide(l, "cannot unmarshal RPMMeta", json.Unmarshal(bs, &meta))
+	json.Unmarshal(bs, &meta)
 	url_ch <- meta.Url
 }

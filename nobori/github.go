@@ -61,17 +61,17 @@ var ghTokmgr = GHTokMgr{}
 var ghl = util.SetupLog("github")
 
 // Fetch data from GitHub
-//
+// 
 // Create a new job to fetch the latest version of the stream
 func GhFetch(stream db.Stream) {
 	defer schedule(stream)
 	job := GHJob{
 		Result: make(chan string),
-		Init:   false,
-		Fetch:  stream.Fetch,
+		Init: false,
+		Fetch: stream.Fetch,
 	}
 	ghPool <- job
-	ver, ok := <-job.Result
+	ver, ok := <- job.Result
 	if !ok {
 		l.Error("cannot fetch stream")
 		return
@@ -107,6 +107,12 @@ func (token *GHToken) noMoreFish() bool {
 	return token.quota == 0
 }
 
+// Rotate to the next token in the pool
+func (token *GHToken) thanksForAllTheFish(tokenIdx *int, tokens *[]GHToken) {
+	*tokenIdx = (*tokenIdx + 1) % len(*tokens)
+	*token = (*tokens)[*tokenIdx]
+}
+
 // Sleep until the token's quota reset time if quota is exhausted
 func (token *GHToken) waitForFish() {
 	if token.quota == 0 {
@@ -130,7 +136,7 @@ type GHTokMgr struct {
 	qlToks               []GHToken // GitHub GraphQL Tokens
 	rtIdx                int
 	qlIdx                int
-	ghWaitSecondaryLimit time.Time // TODO: secondary rate limit handling
+	ghWaitSecondaryLimit time.Time
 }
 
 // Helper to initialize a GitHub token pool by querying rate limits for each token
@@ -149,7 +155,7 @@ func (mgr *GHTokMgr) ghInitTokenPool(pool *[]GHToken, fetchFunc func(token strin
 			if err == nil {
 				token_chan <- &tok
 			} else {
-				util.Yeet(ghl, "cannot fetch", err)
+				util.Yeet(l, "cannot fetch", err)
 				token_chan <- nil
 			}
 		}(token)
@@ -175,7 +181,7 @@ func (mgr *GHTokMgr) ghInitTokenPool(pool *[]GHToken, fetchFunc func(token strin
 		}
 		return +1
 	})
-	ghl.Info("pool initialised", zap.Int("len", len(*pool)))
+	l.Info("pool initialised", zap.Int("len", len(*pool)))
 }
 
 // Initialize the REST API token pool by querying rate limits for each token
@@ -224,10 +230,6 @@ func (mgr *GHTokMgr) ghFillTokQl() {
 	})
 }
 
-// Initialize the token pools
-//
-// We assume there are no more than 50 tokens, such that
-// the concurrent limit is not exceeded.
 func (tokmgr *GHTokMgr) init() {
 	rt_ok := make(chan struct{}, 1)
 	go func() {
@@ -238,46 +240,30 @@ func (tokmgr *GHTokMgr) init() {
 	<-rt_ok
 }
 
-// Obtain and wait for the current GraphQL API token
 func (tokmgr *GHTokMgr) ql() *GHToken {
-	token := &tokmgr.qlToks[tokmgr.qlIdx]
-	token.waitForFish()
-	return token
+	return &tokmgr.qlToks[tokmgr.qlIdx]
 }
-
-// Obtain and wait for the current REST API token
 func (tokmgr *GHTokMgr) rt() *GHToken {
-	token := &tokmgr.rtToks[tokmgr.rtIdx]
-	token.waitForFish()
-	return token
+	return &tokmgr.rtToks[tokmgr.rtIdx]
 }
 
-// Rotate to the next GraphQL token in the pool
-func (tokmgr *GHTokMgr) thanksForAllTheFishQl(token **GHToken) {
-	// we must not use defer (*token).waitForFish(),
-	// as (*token) is evaluated in-place.
-	util.Assert((*token).noMoreFish())
-	if *token != &tokmgr.qlToks[tokmgr.qlIdx] {
-		*token = &tokmgr.qlToks[tokmgr.qlIdx]
-		(*token).waitForFish()
+func (tokmgr *GHTokMgr) rotateQl(token *GHToken) {
+	util.Assert(token.noMoreFish())
+	if token != &tokmgr.qlToks[tokmgr.qlIdx] {
+		token = &tokmgr.qlToks[tokmgr.qlIdx]
 		return
 	}
 	tokmgr.qlIdx = (tokmgr.qlIdx + 1) % len(tokmgr.qlToks)
-	*token = &tokmgr.qlToks[tokmgr.qlIdx]
-	(*token).waitForFish()
+	token = &tokmgr.qlToks[tokmgr.qlIdx]
 }
-
-// Rotate to the next REST token in the pool
-func (tokmgr *GHTokMgr) thanksForAllTheFishRt(token **GHToken) {
-	util.Assert((*token).noMoreFish())
-	if *token != &tokmgr.rtToks[tokmgr.rtIdx] {
-		*token = &tokmgr.rtToks[tokmgr.rtIdx]
-		(*token).waitForFish()
+func (tokmgr *GHTokMgr) rotateRt(token *GHToken) {
+	util.Assert(token.noMoreFish())
+	if token != &tokmgr.rtToks[tokmgr.rtIdx] {
+		token = &tokmgr.rtToks[tokmgr.rtIdx]
 		return
 	}
 	tokmgr.rtIdx = (tokmgr.rtIdx + 1) % len(tokmgr.rtToks)
-	*token = &tokmgr.rtToks[tokmgr.rtIdx]
-	(*token).waitForFish()
+	token = &tokmgr.rtToks[tokmgr.rtIdx]
 }
 
 // ————————————————————————————————————————————————————————————————————————————
@@ -295,10 +281,10 @@ func GhSwimInit() chan struct{} {
 }
 
 // Schedule jobs
-//
+// 
 // Run max. 100 jobs concurrently as required by GitHub.
 // See the rate limit documentation for more information:
-//
+// 
 // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-secondary-rate-limits
 func ghSwim() {
 	finishes := make(chan uint8, 100)
@@ -375,7 +361,7 @@ retry:
 	}
 	tok.updTok(headers)
 	if tok.noMoreFish() {
-		ghTokmgr.thanksForAllTheFishQl(&tok)
+		ghTokmgr.rotateQl(tok)
 		goto retry
 	}
 	return err
@@ -440,7 +426,7 @@ retry:
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden:
 		tok.updTok(resp.Header)
 		if tok.noMoreFish() {
-			ghTokmgr.thanksForAllTheFishRt(&tok)
+			ghTokmgr.rotateRt(tok)
 			goto retry
 		}
 		// TODO: handle secondary rate limit
@@ -500,8 +486,8 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	// GHFetchType: RELEASE
 	job := GHJob{
 		Result: make(chan string),
-		Init:   true,
-		Fetch:  fmt.Sprintf("%d %s %s", RELEASE, "", repo),
+		Init: true,
+		Fetch: fmt.Sprintf("%d %s %s", RELEASE, "", repo),
 	}
 	ghPrioPool <- job
 	var releases []string
@@ -526,8 +512,8 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	// GHFetchType: TAG
 	job = GHJob{
 		Result: make(chan string),
-		Init:   true,
-		Fetch:  fmt.Sprintf("%d %s %s", TAG, "", repo),
+		Init: true,
+		Fetch: fmt.Sprintf("%d %s %s", TAG, "", repo),
 	}
 	ghPrioPool <- job
 
