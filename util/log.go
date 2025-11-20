@@ -72,12 +72,3 @@ func Yeet(l *zap.Logger, msg string, e error, fields ...zap.Field) bool {
 	}
 	return false
 }
-
-func Assert(b bool, v ...any) {
-	if len(v) == 0 {
-		v = []any{"Assertion failed"}
-	}
-	if !b {
-		panic(v[0])
-	}
-}
