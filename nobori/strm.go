@@ -45,8 +45,8 @@ type NewStrmManager struct {
 	// Requests to get streams
 	JobRequest chan *StrmChkJob
 	// List of urls of new streams
-	strmUrls  [STRM_MGR_POOL_MAX]map[string]struct{}
-	jobs      [STRM_MGR_POOL_MAX][]*StrmChkJob
+	newStrms  [STRM_MGR_POOL_MAX][]string
+	jobs      [STRM_MGR_POOL_MAX][]StrmChkJob
 	done      chan StrmChkDoneMsg
 	available chan int
 }
@@ -74,21 +74,19 @@ type StrmChkJob struct {
 	ManifestFuncs []func(string) *db.Stream
 }
 
-var newStrmMgr = &NewStrmManager{}
+var newStrmMgr NewStrmManager
 
-func (mgr *NewStrmManager) Init() {
+func (mgr NewStrmManager) Init() {
 	mgr.newStrmPool = make(chan string, STRM_MGR_POOL_MAX)
 	mgr.available = make(chan int, STRM_MGR_POOL_MAX)
-	mgr.JobRequest = make(chan *StrmChkJob, STRM_MGR_POOL_MAX)
 	for i := range STRM_MGR_POOL_MAX {
 		mgr.available <- i
-		mgr.strmUrls[i] = make(map[string]struct{})
 	}
 	mgr.done = make(chan StrmChkDoneMsg, 100)
 	go mgr.Loop()
 }
 
-func (mgr *NewStrmManager) Check(urls []string) *db.Stream {
+func (mgr NewStrmManager) Check(urls []string) *db.Stream {
 	ch := make(chan *db.Stream)
 	job := &StrmChkJob{
 		URLs: util.SliceMap(urls, mangleUrl),
@@ -99,67 +97,60 @@ func (mgr *NewStrmManager) Check(urls []string) *db.Stream {
 	return <-ch
 }
 
-func (mgr *NewStrmManager) Loop() {
-next_job:
-	for len(mgr.done) > 0 || len(mgr.available) == 0 {
-		msg := <-mgr.done
-		mgr.available <- msg.idx
-		defer clear(mgr.jobs[msg.idx][0].URLs) // job finished
-		defer clear(mgr.strmUrls[msg.idx])
-		defer clear(mgr.jobs[msg.idx])
-		if msg.strm == nil {
-			for _, job := range mgr.jobs[msg.idx] {
-				job.ch <- nil
-			}
-			goto next_job
-		}
-		mirrors := util.SliceMap(mgr.jobs[msg.idx][0].URLs, func(url string) db.StreamMirror {
-			return db.StreamMirror{
-				StreamID: msg.strm.ID,
-				Mirror:   url,
-			}
-		})
-		util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error)
+func (mgr NewStrmManager) Loop() {
+	for {
+		for len(mgr.done) > 0 || len(mgr.available) == 0 {
+			msg := <-mgr.done
+			mgr.available <- msg.idx
+			mirrors := util.SliceMap(mgr.jobs[msg.idx][0].URLs, func(url string) db.StreamMirror {
+				return db.StreamMirror{
+					StreamID: msg.strm.ID,
+					Mirror:   url,
+				}
+			})
+			clear(mgr.jobs[msg.idx][0].URLs) // job finished
+			util.Yeet(l, "fail to save stream mirrors", db.DB.Save(mirrors).Error)
 
-		for _, job := range mgr.jobs[msg.idx] {
-			job.ch <- msg.strm
+			for _, job := range mgr.jobs[msg.idx] {
+				job.ch <- msg.strm
+			}
+			clear(mgr.newStrms[msg.idx])
+			clear(mgr.jobs[msg.idx])
 		}
-	}
-	select {
-	case job := <-mgr.JobRequest:
-		for i, urlMap := range mgr.strmUrls {
-			for _, url := range job.URLs {
-				if _, ok := urlMap[url]; !ok {
-					continue
+		if len(mgr.JobRequest) == 0 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		job := <-mgr.JobRequest
+		found := false
+		for i, newStrm := range mgr.newStrms {
+			if slices.ContainsFunc(newStrm, func(url string) bool { return slices.Contains(job.URLs, url) }) {
+				found = true
+				for _, url := range job.URLs {
+					if !slices.Contains(mgr.newStrms[i], url) {
+						mgr.newStrms[i] = append(mgr.newStrms[i], url)
+					}
 				}
-				for _, u := range job.URLs {
-					urlMap[u] = struct{}{}
-				}
-				mgr.jobs[i] = append(mgr.jobs[i], job)
+				mgr.jobs[i] = append(mgr.jobs[i], *job)
 				var strm *db.Stream
 				if slices.ContainsFunc(job.ManifestFuncs, func(fn func(url string) *db.Stream) bool {
 					return slices.ContainsFunc(job.URLs, func(url string) bool { strm = fn(url); return strm != nil })
 				}) {
-					// WARN: there's a slight chance `Manifest()` is also sending a `done <-`
-					// we should handle this later.
 					mgr.done <- StrmChkDoneMsg{
 						strm: strm,
 						idx:  i,
 					}
 					db.DB.Save(strm)
 				}
-				goto next_job
+				continue
 			}
 		}
-		l.Debug("run new stream job", zap.Int("job_idx", job.idx))
-		// TODO: also check database
-		job.idx = <-mgr.available
-		mgr.jobs[job.idx] = []*StrmChkJob{job}
-		go mgr.hdlNewStrm(job)
-	default:
-		time.Sleep(10 * time.Millisecond)
+		if !found {
+			// TODO: also check database
+			job.idx = <-mgr.available
+			go mgr.hdlNewStrm(job)
+		}
 	}
-	goto next_job
 }
 
 func (mgr NewStrmManager) hdlNewStrm(job *StrmChkJob) {
@@ -177,18 +168,11 @@ func (mgr NewStrmManager) hdlNewStrm(job *StrmChkJob) {
 		}
 	}
 	l.Debug("didn't find any existing strm, and no strm supported", zap.Strings("urls", job.URLs))
-	mgr.done <- StrmChkDoneMsg{
-		strm: nil,
-		idx:  job.idx,
-	}
 }
 
-// Register a manifest function
-//
-// If this function returns true, job is done, so stop immediately.
 func (job *StrmChkJob) Manifest(fn func(string) *db.Stream) bool {
 	if len(job.URLs) == 0 {
-		// indicates job finished
+		// indnicates job finished
 		return true
 	}
 	job.ManifestFuncs = append(job.ManifestFuncs, fn)
@@ -198,7 +182,6 @@ func (job *StrmChkJob) Manifest(fn func(string) *db.Stream) bool {
 			strm: strm,
 			idx:  job.idx,
 		}
-		l.Debug("job done", zap.Int("job_idx", job.idx))
 		return true
 	}
 	return false
@@ -236,31 +219,24 @@ func RegPkg(dbx *gorm.DB, p *db.Pkg) error {
 	url_ch := make(chan string)
 	go UpTrace(*p, url_ch)
 	urls := map[string]struct{}{}
+	var mirrors []db.StreamMirror
 	for url := range url_ch {
 		url = mangleUrl(url)
 		urls[url] = struct{}{}
-	}
-	if len(urls) == 0 {
-		return dbx.Save(p).Error
-	}
-
-	var mirrors []db.StreamMirror
-	// FIXME: obtain a list of StreamMirror with the same id!
-	// FIXME: join different Streams?
-	if err := dbx.Find(&mirrors, "stream_id IN (SELECT stream_id FROM stream_mirrors WHERE mirror IN ?)", slices.Collect(maps.Keys(urls))).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			goto new
-		} else {
-			return xerrors.Newf("can't find StreamMirror in db (pkgid %s): %w", p.ID.String(), err)
+		if e := dbx.Find(&mirrors, "stream_id = (SELECT stream_id FROM stream_mirrors WHERE mirror = ?)", strings.TrimSuffix(url, "/")).Error; e != nil {
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return xerrors.Newf("can't find StreamMirror in db (pkgid %s): %w", p.ID.String(), e)
 		}
-	}
-	if len(mirrors) != 0 {
-		return handleExistingStrm(urls, mirrors, p, dbx)
+		if len(mirrors) == 0 {
+			continue
+		}
+		return handleExistingStrm(urls, mirrors, url_ch, p, dbx)
 	}
 	if err := dbx.Save(p).Error; err != nil {
 		return err
 	}
-new:
 	// WARN: potential race conditions
 	// we can do this after the db query, we suspect the chances of race conditions is near impossible
 	// given the stream is first saved, and only then is it removed from the array in the mgr.
@@ -271,19 +247,11 @@ new:
 	return nil
 }
 
-func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, p *db.Pkg, dbx *gorm.DB) error {
-	var new_mirrors []db.StreamMirror
-	l.Debug("handle existing", zap.String("pkgname", p.Name))
+func handleExistingStrm(urls map[string]struct{}, mirrors []db.StreamMirror, url_ch chan string, p *db.Pkg, dbx *gorm.DB) error {
 	util.SliceEach(mirrors, func(m db.StreamMirror) { urls[m.Mirror] = struct{}{} })
-	for _, mirror := range mirrors {
-		if mirror.StreamID != mirrors[0].StreamID {
-			dbx.Model(&db.Pkg{}).Where("stream_id = ?", mirror.StreamID).Update("stream_id", mirrors[0].StreamID)
-			mirror.StreamID = mirrors[0].StreamID
-			new_mirrors = append(new_mirrors, mirror)
-		}
-	}
-	for url := range urls {
-		if !slices.ContainsFunc(mirrors, func(mirror db.StreamMirror) bool { return mirror.Mirror == url }) {
+	var new_mirrors []db.StreamMirror
+	for url := range url_ch {
+		if _, has := urls[url]; !has {
 			new_mirrors = append(new_mirrors, db.StreamMirror{
 				StreamID: mirrors[0].StreamID,
 				Mirror:   url,

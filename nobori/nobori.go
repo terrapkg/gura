@@ -34,10 +34,10 @@ import (
 
 	"github.com/terrapkg/gura/db"
 	"github.com/terrapkg/gura/util"
+	"go.uber.org/zap"
 )
 
 var l = util.SetupLog("nobori")
-var scheduler = util.NewScheduler()
 
 // Central channel for scheduling upstream stream fetches
 var queue chan db.Stream = make(chan db.Stream)
@@ -68,9 +68,9 @@ func calcTimeout(lastChk time.Time) time.Duration {
 // Wait until the next scheduled time for a stream and then enqueues it for processing
 func schedule(stream db.Stream) {
 	t := stream.LastChk.Add(calcTimeout(stream.LastChk))
-	scheduler.Schedule(t, func() {
-		queue <- stream
-	})
+	l.Debug("sched", zap.String("stream", stream.ID.String()), zap.Time("until", t))
+	time.Sleep(time.Until(t))
+	queue <- stream
 }
 
 // Start the fetch loop for upstream metadata fetching
@@ -84,7 +84,6 @@ func StartFetchLoop() {
 	util.Yeet(l, "can't find streams", r.Error)
 
 	util.SliceEach(ready_chs, func(ch chan struct{}) { <-ch })
-	newStrmMgr.Init()
 
 	go fetchLoop(strms)
 	l.Info("nobori ready")
@@ -95,54 +94,12 @@ func StartFetchLoop() {
 // Streams are processed from the queue as their scheduled time arrives.
 func fetchLoop(strms []db.Stream) {
 	for _, stream := range strms {
-		schedule(stream)
+		go schedule(stream)
 	}
-	githubJobs := []NoboriGitHubJob{}
-
 	for {
-		githubJobs = handleCompletedGitHubJobs(githubJobs)
-		var stream db.Stream
-		select {
-			case stream = <-queue:
-			default:
-				time.Sleep(10 * time.Millisecond)
-				continue
-		}
-		switch stream.Forge {
+		switch stream := <-queue; stream.Forge {
 		case db.GitHub:
-			job := GHJob{Result: make(chan string), Init: false, Fetch: stream.Fetch}
-			ghPool <- job
-			githubJobs = append(githubJobs, NoboriGitHubJob{
-				stream: stream,
-				job:    job,
-			})
+			go GhFetch(stream)
 		}
 	}
-}
-
-func handleCompletedGitHubJobs(jobs []NoboriGitHubJob) (remainingJobs []NoboriGitHubJob) {
-	for _, gh := range jobs {
-		select {
-		case ver, ok := <-gh.job.Result:
-			schedule(gh.stream)
-			if !ok {
-				l.Error("cannot fetch stream")
-				continue // Don't re-add this job
-			}
-			if ver != gh.stream.Ver {
-				gh.stream.Ver = ver
-				gh.stream.LastUpd = time.Now()
-			}
-			gh.stream.LastChk = time.Now()
-			util.Yeet(ghl, "cannot save stream", db.DB.Save(gh.stream).Error)
-		default:
-			remainingJobs = append(remainingJobs, gh)
-		}
-	}
-	return
-}
-
-type NoboriGitHubJob struct {
-	stream db.Stream
-	job    GHJob
 }
