@@ -45,7 +45,7 @@ var queue chan db.Stream = make(chan db.Stream)
 // Upstream handlers
 // Each handler function should return a channel.
 // Sending a message to the channel indicates the swimmer is ready.
-var swimmers = []func() chan struct{}{GhSwim}
+var swimmers = []func() chan struct{}{GhSwimInit}
 
 // Calculate the timeout duration
 //
