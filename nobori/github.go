@@ -410,18 +410,19 @@ func (job *GHJob) CallRt(method string, url string) *http.Response {
 	tok := ghTokmgr.rt()
 retry:
 	req, err := http.NewRequest(method, url, nil)
-	if util.Yeet(ghl, "CallRt fail", xerrors.Newf("new req fail: %w", err)) {
+	if err != nil {
+		ghl.Error("CallRt fail", zap.String("err", xerrors.Sprint(xerrors.Newf("new req fail: %w", err))))
 		return nil
 	}
 	req.Header.Add("Authorization", "Bearer "+tok.key)
 	t0 := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if t := time.Since(t0); t.Milliseconds() > GH_WARN_DUR {
-		l.Warn("took " + t.String())
+		ghl.Warn("took " + t.String())
 	}
 	switch {
 	case err != nil:
-		l.Error("CallRt resp fail", zap.String("fetch", job.Fetch), zap.Error(err))
+		ghl.Error("CallRt resp fail", zap.String("fetch", job.Fetch), zap.Error(err))
 		return nil
 	case resp.StatusCode == http.StatusOK:
 		tok.updTok(resp.Header)
@@ -445,10 +446,10 @@ retry:
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		l.Error("can't read body", zap.String("fetch", job.Fetch), zap.Error(err))
+		ghl.Error("can't read body", zap.String("fetch", job.Fetch), zap.Error(err))
 		body = []byte{}
 	}
-	l.Error("bad status", zap.String("status", resp.Status), zap.String("fetch", job.Fetch), zap.ByteString("body", body))
+	ghl.Error("bad status", zap.String("status", resp.Status), zap.String("fetch", job.Fetch), zap.ByteString("body", body))
 	return nil
 }
 
