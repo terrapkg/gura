@@ -55,8 +55,8 @@ import (
 const GH_WARN_DUR = 500 // ms
 const GH_STRM_HDLR_TEST_QL_MAX = 20
 
-var ghPrioPool = make(chan *GHJob, 100)
-var ghPool = make(chan *GHJob, 100)
+var ghPrioPool = make(chan ghJob, 100)
+var ghPool = make(chan ghJob, 100)
 var ghTokmgr = GHTokMgr{}
 var ghl = util.SetupLog("github")
 
@@ -65,10 +65,12 @@ var ghl = util.SetupLog("github")
 // Create a new job to fetch the latest version of the stream
 func GhFetch(stream db.Stream) {
 	defer schedule(stream)
-	job := &GHJob{
+	job := &GHJobSingle{
+		ghJobBase: ghJobBase{
+			Init:  false,
+			Fetch: stream.Fetch,
+		},
 		Result: make(chan string),
-		Init:   false,
-		Fetch:  stream.Fetch,
 	}
 	ghPool <- job
 	ver, ok := <-job.Result
@@ -326,13 +328,26 @@ const (
 	QL
 )
 
-type GHJob struct {
-	Result chan string
-	Init   bool
-	Fetch  string
+type ghJob interface {
+	run(idx uint8, finishes chan uint8)
 }
 
-func (job *GHJob) run(idx uint8, finishes chan uint8) {
+type ghJobBase struct {
+	Init  bool
+	Fetch string
+}
+
+type GHJobSingle struct {
+	ghJobBase
+	Result chan string
+}
+
+type GHJobMulti struct {
+	ghJobBase
+	Result chan []string
+}
+
+func (job *GHJobSingle) run(idx uint8, finishes chan uint8) {
 	s, remain := util.SplitOnce(job.Fetch, ' ')
 	i, err := strconv.ParseUint(s, 10, 8)
 	util.Assert(err == nil)
@@ -347,7 +362,22 @@ func (job *GHJob) run(idx uint8, finishes chan uint8) {
 	finishes <- idx
 }
 
-func (job *GHJob) CallQl(q any, vars map[string]any) error {
+func (job *GHJobMulti) run(idx uint8, finishes chan uint8) {
+	s, remain := util.SplitOnce(job.Fetch, ' ')
+	i, err := strconv.ParseUint(s, 10, 8)
+	util.Assert(err == nil)
+	switch GHFetchType(i) {
+	case TAG:
+		job.qlTag(remain)
+	case RELEASE:
+		job.rtRelease(remain)
+	case QL:
+		panic("todo") // TODO: ql fetch mode
+	}
+	finishes <- idx
+}
+
+func (job *ghJobBase) CallQl(q any, vars map[string]any) error {
 	tok := ghTokmgr.ql()
 retry:
 	headers := http.Header{}
@@ -371,7 +401,7 @@ retry:
 	return err
 }
 
-func (job *GHJob) qlTag(remain string) {
+func (job *GHJobSingle) qlTag(remain string) {
 	defer close(job.Result)
 	prefix, remain := util.SplitOnce(remain, ' ')
 	owner, name := util.SplitOnce(remain, '/')
@@ -401,12 +431,54 @@ func (job *GHJob) qlTag(remain string) {
 		return
 	}
 
-	for _, edge := range q.Repository.Refs.Edges {
-		job.Result <- edge.Node.Name
+	if len(q.Repository.Refs.Edges) == 0 {
+		return
 	}
+	job.Result <- q.Repository.Refs.Edges[0].Node.Name
 }
 
-func (job *GHJob) CallRt(method string, url string) *http.Response {
+func (job *GHJobMulti) qlTag(remain string) {
+	defer close(job.Result)
+	prefix, remain := util.SplitOnce(remain, ' ')
+	owner, name := util.SplitOnce(remain, '/')
+	length := 1
+	if job.Init {
+		length = GH_STRM_HDLR_TEST_QL_MAX
+	}
+
+	var q struct {
+		Repository struct { // https://docs.github.com/en/graphql/reference/objects#repository
+			Refs struct { // https://docs.github.com/en/graphql/reference/objects#refconnection
+				Edges []struct {
+					Node struct {
+						Name string
+					}
+				}
+			} `graphql:"refs(refPrefix: \"refs/tags/\", last: $len, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}, query: $prefix)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	err := job.CallQl(&q, map[string]any{
+		"prefix": prefix,
+		"owner":  owner,
+		"name":   name,
+		"len":    length,
+	})
+	if util.Yeet(ghl, "ql_tag_call", err) {
+		return
+	}
+
+	if len(q.Repository.Refs.Edges) == 0 {
+		return
+	}
+
+	results := make([]string, 0, len(q.Repository.Refs.Edges))
+	for _, edge := range q.Repository.Refs.Edges {
+		results = append(results, edge.Node.Name)
+	}
+	job.Result <- results
+}
+
+func (job *ghJobBase) CallRt(method string, url string) *http.Response {
 	tok := ghTokmgr.rt()
 retry:
 	req, err := http.NewRequest(method, url, nil)
@@ -453,7 +525,7 @@ retry:
 	return nil
 }
 
-func (job *GHJob) rtRelease(remain string) {
+func (job *GHJobSingle) rtRelease(remain string) {
 	defer close(job.Result)
 	prefix, repo := util.SplitOnce(remain, ' ')
 	resp := job.CallRt(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases")
@@ -475,10 +547,41 @@ func (job *GHJob) rtRelease(remain string) {
 		after, found := strings.CutPrefix(r.Tag, prefix)
 		if found {
 			job.Result <- after
+			return
+		}
+	}
+}
+
+func (job *GHJobMulti) rtRelease(remain string) {
+	defer close(job.Result)
+	prefix, repo := util.SplitOnce(remain, ' ')
+	resp := job.CallRt(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases")
+	if resp == nil {
+		return
+	}
+
+	buf, err := io.ReadAll(resp.Body)
+	util.MaybeSuicide(ghl, "can't read buf", err)
+	type Resp struct {
+		Tag string `json:"tag_name"`
+	}
+
+	var v []Resp
+	if util.Yeet(ghl, "can't unmarshal", json.Unmarshal(buf, &v), zap.ByteString("resp", buf)) {
+		return
+	}
+	var releases []string
+	for _, r := range v {
+		after, found := strings.CutPrefix(r.Tag, prefix)
+		if found {
+			releases = append(releases, after)
 			if job.Init {
-				return
+				break
 			}
 		}
+	}
+	if len(releases) > 0 {
+		job.Result <- releases
 	}
 }
 
@@ -489,21 +592,24 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	repo := strings.TrimSuffix(strings.TrimPrefix(url, "github.com/"), "/")
 
 	// GHFetchType: RELEASE
-	job := &GHJob{
-		Result: make(chan string),
-		Init:   true,
-		Fetch:  fmt.Sprintf("%d %s %s", RELEASE, "", repo),
+	job := &GHJobMulti{
+		ghJobBase: ghJobBase{
+			Init:  true,
+			Fetch: fmt.Sprintf("%d %s %s", RELEASE, "", repo),
+		},
+		Result: make(chan []string),
 	}
 	ghPrioPool <- job
-	var releases []string
-	for release := range job.Result {
-		releases = append(releases, release)
-		if prefix, found := strings.CutSuffix(release, pkg.Ver); found {
-			strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
-			strm.LastChk = time.Now()
-			strm.LastUpd = time.Now()
-			strm.Ver = pkg.Ver
-			return strm
+	releases, ok := <-job.Result
+	if ok {
+		for _, release := range releases {
+			if prefix, found := strings.CutSuffix(release, pkg.Ver); found {
+				strm.Fetch = fmt.Sprintf("%d %s %s", RELEASE, prefix, repo)
+				strm.LastChk = time.Now()
+				strm.LastUpd = time.Now()
+				strm.Ver = pkg.Ver
+				return strm
+			}
 		}
 	}
 	if len(releases) > 0 {
@@ -515,22 +621,25 @@ func GhStrmHdlr(pkg db.Pkg, url string) *db.Stream {
 	}
 
 	// GHFetchType: TAG
-	job = &GHJob{
-		Result: make(chan string),
-		Init:   true,
-		Fetch:  fmt.Sprintf("%d %s %s", TAG, "", repo),
+	job = &GHJobMulti{
+		ghJobBase: ghJobBase{
+			Init:  true,
+			Fetch: fmt.Sprintf("%d %s %s", TAG, "", repo),
+		},
+		Result: make(chan []string),
 	}
 	ghPrioPool <- job
 
-	var tags []string
-	for tag := range job.Result {
-		tags = append(tags, tag)
-		if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
-			strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
-			strm.LastChk = time.Now()
-			strm.LastUpd = time.Now()
-			strm.Ver = pkg.Ver
-			return strm
+	tags, ok := <-job.Result
+	if ok {
+		for _, tag := range tags {
+			if prefix, found := strings.CutSuffix(tag, pkg.Ver); found {
+				strm.Fetch = fmt.Sprintf("%d %s %s", TAG, prefix, repo)
+				strm.LastChk = time.Now()
+				strm.LastUpd = time.Now()
+				strm.Ver = pkg.Ver
+				return strm
+			}
 		}
 	}
 	if len(tags) > 0 {
